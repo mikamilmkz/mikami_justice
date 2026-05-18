@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-API_KEY = os.getenv("BRIHUB_API_KEY")
+API_KEY = os.getenv("API_KEY")  # ✅ CORRIGÉ
 BASE_URL = "https://brixhub.site/api/v1"
 
 @app.route("/")
@@ -31,8 +31,6 @@ def search():
 
     except Exception as e:
         return jsonify({"error": str(e)})
-
-import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
