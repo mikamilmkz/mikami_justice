@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>mikami_justice</title>
+
+    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- MAP -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+</head>
+<body>
+
+<div class="header">
+    <h1>MIKAMI JUSTICE</h1>
+</div>
+
+<div class="panel">
+    <input type="text" id="prenom" placeholder="Prénom">
+    <input type="text" id="nom" placeholder="Nom de famille">
+    <input type="text" id="phone" placeholder="Téléphone">
+    <input type="text" id="email" placeholder="Email">
+    <input type="text" id="username" placeholder="Username">
+    <input type="text" id="ip" placeholder="Adresse IP">
+    <input type="text" id="city" placeholder="Ville">
+
+    <button onclick="search()">⚖️ JUDGEMENT</button>
+</div>
+
+<div id="status"></div>
+
+<div id="result" class="results"></div>
+
+<script>
+
+/* =========================
+   🔎 SEARCH API
+========================= */
+async function search() {
+
+    document.getElementById("status").innerHTML = "Recherche en cours...";
+
+    const body = {
+        prenom: document.getElementById("prenom").value,
+        nom_famille: document.getElementById("nom").value,
+        telephone: document.getElementById("phone").value,
+        email: document.getElementById("email").value,
+        nom_utilisateur: document.getElementById("username").value,
+        adresse_ip: document.getElementById("ip").value,
+        ville: document.getElementById("city").value,
+        flexible: true
+    };
+
+    const res = await fetch("/search", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+    });
+
+    const data = await res.json();
+    displayResults(data);
+}
+
+/* =========================
+   📊 DISPLAY RESULTS
+========================= */
+function displayResults(data) {
+
+    const div = document.getElementById("result");
+    const status = document.getElementById("status");
+
+    if (!data.data || data.data.results.length === 0) {
+        status.innerHTML = "❌ Aucun résultat";
+        div.innerHTML = "";
+        return;
+    }
+
+    status.innerHTML = "✔ Résultats trouvés";
+
+    let html = "";
+
+    data.data.results.forEach((p, index) => {
+
+        const adresse = `
+            ${p.adresse || ""} 
+            ${p.code_postal || ""} 
+            ${p.ville || ""} 
+            ${p.pays || ""}
+        `;
+
+        const mapId = "map_" + index;
+
+        html += `
+            <div class="card">
+                <h3>⚖️ ${p.prenom || ""} ${p.nom_famille || ""}</h3>
+
+                <p><strong>Email:</strong> ${p.email || "-"}</p>
+                <p><strong>Téléphone:</strong> ${p.telephone || "-"}</p>
+                <p><strong>Ville:</strong> ${p.ville || "-"}</p>
+
+                <p><strong>Adresse:</strong> ${adresse}</p>
+
+                <div id="${mapId}" style="height: 250px;"></div>
+
+                <p style="color:${p._confidence > 70 ? '#4caf50' : '#ff9800'}">
+                    Confiance: ${p._confidence}%
+                </p>
+
+                <p><strong>Sources:</strong> ${p._sources.join(", ")}</p>
+            </div>
+        `;
+    });
+
+    div.innerHTML = html;
+
+    // 🗺️ MAPS
+    data.data.results.forEach((p, index) => {
+
+        const adresse = `${p.adresse || ""} ${p.code_postal || ""} ${p.ville || ""}`;
+
+        if (!adresse.trim()) return;
+
+        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(adresse)}`)
+            .then(res => res.json())
+            .then(loc => {
+                if (loc.length === 0) return;
+
+                const lat = loc[0].lat;
+                const lon = loc[0].lon;
+
+                const map = L.map("map_" + index).setView([lat, lon], 13);
+
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap'
+                }).addTo(map);
+
+                L.marker([lat, lon]).addTo(map);
+            });
+    });
+}
+
+</script>
+
+</body>
+</html>

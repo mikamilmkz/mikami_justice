@@ -1,0 +1,96 @@
+body {
+    margin: 0;
+    background: #0d0d0d;
+    color: #eaeaea;
+    font-family: 'Segoe UI', Arial, sans-serif;
+}
+
+/* HEADER */
+.header {
+    text-align: center;
+    padding: 20px;
+    border-bottom: 1px solid #222;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 32px;
+    color: #e50914;
+    letter-spacing: 2px;
+}
+
+/* PANEL */
+.panel {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    padding: 20px;
+    max-width: 900px;
+    margin: auto;
+}
+
+input {
+    padding: 10px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: white;
+    border-radius: 5px;
+}
+
+/* BUTTON */
+button {
+    grid-column: span 2;
+    padding: 12px;
+    background: #e50914;
+    border: none;
+    color: white;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover {
+    background: #ff1f2d;
+}
+
+/* STATUS */
+#status {
+    text-align: center;
+    margin-top: 10px;
+    color: #aaa;
+}
+
+/* RESULTS */
+.results {
+    max-width: 900px;
+    margin: auto;
+}
+
+/* CARD */
+.card {
+    background: #1a1a1a;
+    border: 1px solid #222;
+    border-left: 4px solid #e50914;
+    border-radius: 8px;
+    padding: 15px;
+    margin: 20px 0;
+}
+
+/* NAME */
+.card h3 {
+    margin: 0 0 10px;
+    color: #e50914;
+}
+
+/* TEXT */
+.card p {
+    margin: 4px 0;
+    color: #ccc;
+}
+
+/* MAP */
+.card div[id^="map_"] {
+    margin-top: 10px;
+    border-radius: 6px;
+    overflow: hidden;
+}
