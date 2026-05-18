@@ -132,6 +132,10 @@ function displayResults(data) {
 
                 const map = L.map("map_" + index).setView([lat, lon], 13);
 
+setTimeout(() => {
+    map.invalidateSize();
+}, 100);
+
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '© OpenStreetMap'
                 }).addTo(map);
