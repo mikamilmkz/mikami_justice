@@ -1,126 +1,186 @@
 <!DOCTYPE html>
-<html>
+<html lang="fr">
 <head>
-    <title>mikami_justice</title>
+<meta charset="UTF-8">
+<title>Mikami Justice</title>
 
-    <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 
-    <!-- MAP -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<style>
+body {
+    margin: 0;
+    font-family: 'Segoe UI', sans-serif;
+    background: #0d0d0d;
+    color: #eaeaea;
+}
+
+header {
+    padding: 20px;
+    background: #111;
+    border-bottom: 1px solid #222;
+    text-align: center;
+    font-size: 22px;
+    letter-spacing: 2px;
+    color: #ff1a1a;
+}
+
+.container {
+    max-width: 1100px;
+    margin: auto;
+    padding: 30px;
+}
+
+.search-box {
+    background: #141414;
+    padding: 25px;
+    border-radius: 12px;
+    border: 1px solid #222;
+    box-shadow: 0 0 20px rgba(255,0,0,0.1);
+}
+
+input {
+    width: 100%;
+    padding: 12px;
+    margin: 8px 0;
+    background: #0f0f0f;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: white;
+}
+
+button {
+    width: 100%;
+    padding: 14px;
+    margin-top: 15px;
+    background: linear-gradient(90deg, #ff0000, #990000);
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    transition: 0.2s;
+}
+
+button:hover {
+    opacity: 0.8;
+}
+
+.status {
+    margin-top: 15px;
+    color: #aaa;
+}
+
+.result-card {
+    background: #141414;
+    border: 1px solid #222;
+    border-radius: 12px;
+    padding: 20px;
+    margin-top: 20px;
+    box-shadow: 0 0 15px rgba(255,0,0,0.05);
+}
+
+.result-card h3 {
+    color: #ff1a1a;
+}
+
+.map {
+    height: 250px;
+    margin-top: 10px;
+    border-radius: 10px;
+    overflow: hidden;
+}
+</style>
 </head>
+
 <body>
 
-<div class="header">
-    <h1>MIKAMI JUSTICE</h1>
+<header>
+☠ MIKAMI JUSTICE ☠
+</header>
+
+<div class="container">
+
+<div class="search-box">
+<input id="prenom" placeholder="Prénom">
+<input id="nom" placeholder="Nom">
+<input id="phone" placeholder="Téléphone">
+<input id="email" placeholder="Email">
+<input id="username" placeholder="Username">
+<input id="ip" placeholder="IP">
+<input id="city" placeholder="Ville">
+
+<button onclick="search()">JUDGEMENT</button>
+
+<p id="status" class="status"></p>
 </div>
 
-<div class="panel">
-    <input type="text" id="prenom" placeholder="Prénom">
-    <input type="text" id="nom" placeholder="Nom de famille">
-    <input type="text" id="phone" placeholder="Téléphone">
-    <input type="text" id="email" placeholder="Email">
-    <input type="text" id="username" placeholder="Username">
-    <input type="text" id="ip" placeholder="Adresse IP">
-    <input type="text" id="city" placeholder="Ville">
+<div id="results"></div>
 
-    <button onclick="search()">⚖️ JUDGEMENT</button>
 </div>
 
-<div id="status"></div>
-
-<div id="result" class="results"></div>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
 <script>
-
-/* =========================
-   🔎 SEARCH API
-========================= */
 async function search() {
 
-    document.getElementById("status").innerHTML = "Recherche en cours...";
+    document.getElementById("status").innerHTML = "Analyse en cours...";
+    document.getElementById("results").innerHTML = "";
 
-    const body = {
-        prenom: document.getElementById("prenom").value,
-        nom_famille: document.getElementById("nom").value,
-        telephone: document.getElementById("phone").value,
-        email: document.getElementById("email").value,
-        nom_utilisateur: document.getElementById("username").value,
-        adresse_ip: document.getElementById("ip").value,
-        ville: document.getElementById("city").value,
-        flexible: true
+    const body = {};
+
+    const fields = {
+        prenom: "prenom",
+        nom_famille: "nom",
+        telephone: "phone",
+        email: "email",
+        nom_utilisateur: "username",
+        adresse_ip: "ip",
+        ville: "city"
     };
+
+    for (let key in fields) {
+        const value = document.getElementById(fields[key]).value;
+        if (value) body[key] = value;
+    }
+
+    body.flexible = true;
 
     const res = await fetch("/search", {
         method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
+        headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body)
     });
 
     const data = await res.json();
-    displayResults(data);
-}
-
-/* =========================
-   📊 DISPLAY RESULTS
-========================= */
-function displayResults(data) {
-
-    const div = document.getElementById("result");
-    const status = document.getElementById("status");
 
     if (!data.data || data.data.results.length === 0) {
-        status.innerHTML = "❌ Aucun résultat";
-        div.innerHTML = "";
+        document.getElementById("status").innerHTML = "Aucun résultat.";
         return;
     }
 
-    status.innerHTML = "✔ Résultats trouvés";
+    document.getElementById("status").innerHTML = "Résultats trouvés";
 
-    let html = "";
+    data.data.results.forEach((person, index) => {
 
-    data.data.results.forEach((p, index) => {
+        const div = document.createElement("div");
+        div.className = "result-card";
 
-        const adresse = `
-            ${p.adresse || ""} 
-            ${p.code_postal || ""} 
-            ${p.ville || ""} 
-            ${p.pays || ""}
-        `;
+        let html = "<h3>Profil détecté</h3>";
 
-        const mapId = "map_" + index;
+        for (const key in person) {
+            if (!key.startsWith("_")) {
+                html += `<p><b>${key}:</b> ${person[key]}</p>`;
+            }
+        }
 
-        html += `
-            <div class="card">
-                <h3>⚖️ ${p.prenom || ""} ${p.nom_famille || ""}</h3>
+        html += `<div id="map_${index}" class="map"></div>`;
 
-                <p><strong>Email:</strong> ${p.email || "-"}</p>
-                <p><strong>Téléphone:</strong> ${p.telephone || "-"}</p>
-                <p><strong>Ville:</strong> ${p.ville || "-"}</p>
+        div.innerHTML = html;
+        document.getElementById("results").appendChild(div);
 
-                <p><strong>Adresse:</strong> ${adresse}</p>
+        const adresse = person.adresse || person.ville || "";
 
-                <div id="${mapId}" style="height: 250px;"></div>
-
-                <p style="color:${p._confidence > 70 ? '#4caf50' : '#ff9800'}">
-                    Confiance: ${p._confidence}%
-                </p>
-
-                <p><strong>Sources:</strong> ${p._sources.join(", ")}</p>
-            </div>
-        `;
-    });
-
-    div.innerHTML = html;
-
-    // 🗺️ MAPS
-    data.data.results.forEach((p, index) => {
-
-        const adresse = `${p.adresse || ""} ${p.code_postal || ""} ${p.ville || ""}`;
-
-        if (!adresse.trim()) return;
+        if (!adresse) return;
 
         fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(adresse)}`)
             .then(res => res.json())
@@ -132,9 +192,9 @@ function displayResults(data) {
 
                 const map = L.map("map_" + index).setView([lat, lon], 13);
 
-setTimeout(() => {
-    map.invalidateSize();
-}, 100);
+                setTimeout(() => {
+                    map.invalidateSize();
+                }, 100);
 
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '© OpenStreetMap'
@@ -144,8 +204,7 @@ setTimeout(() => {
             });
     });
 }
-
 </script>
 
 </body>
-</html>
+</html>          
