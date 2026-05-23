@@ -2,105 +2,116 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>Mikami Justice</title>
+<title>Mikami OSINT</title>
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 
 <style>
 body {
     margin: 0;
-    font-family: 'Segoe UI', sans-serif;
-    background: #0d0d0d;
-    color: #eaeaea;
+    font-family: Inter, sans-serif;
+    background: #0b0b0c;
+    color: #e5e5e5;
+    display: flex;
 }
 
-header {
+.sidebar {
+    width: 220px;
+    background: #0d0d0e;
+    border-right: 1px solid #1a1a1a;
     padding: 20px;
-    background: #111;
-    border-bottom: 1px solid #222;
-    text-align: center;
-    font-size: 22px;
-    letter-spacing: 2px;
-    color: #ff1a1a;
+    height: 100vh;
 }
 
-.container {
-    max-width: 1100px;
-    margin: auto;
+.logo span {
+    color: #e11d48;
+}
+
+.menu div {
+    margin: 15px 0;
+    cursor: pointer;
+}
+
+.main {
+    flex: 1;
     padding: 30px;
 }
 
-.search-box {
-    background: #141414;
-    padding: 25px;
-    border-radius: 12px;
-    border: 1px solid #222;
-    box-shadow: 0 0 20px rgba(255,0,0,0.1);
+.card {
+    background: #111113;
+    border: 1px solid #1f1f22;
+    border-radius: 14px;
+    padding: 20px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
 }
 
 input {
-    width: 100%;
-    padding: 12px;
-    margin: 8px 0;
-    background: #0f0f0f;
-    border: 1px solid #333;
+    padding: 10px;
+    background: #0f0f11;
+    border: 1px solid #2a2a2e;
     border-radius: 8px;
     color: white;
 }
 
 button {
-    width: 100%;
-    padding: 14px;
     margin-top: 15px;
-    background: linear-gradient(90deg, #ff0000, #990000);
+    padding: 12px;
+    background: #e11d48;
     border: none;
     border-radius: 8px;
     color: white;
-    font-weight: bold;
     cursor: pointer;
-    transition: 0.2s;
-}
-
-button:hover {
-    opacity: 0.8;
-}
-
-.status {
-    margin-top: 15px;
-    color: #aaa;
 }
 
 .result-card {
-    background: #141414;
-    border: 1px solid #222;
-    border-radius: 12px;
-    padding: 20px;
-    margin-top: 20px;
-    box-shadow: 0 0 15px rgba(255,0,0,0.05);
-}
-
-.result-card h3 {
-    color: #ff1a1a;
+    margin-top: 15px;
+    background: #111113;
+    padding: 15px;
+    border-radius: 10px;
 }
 
 .map {
-    height: 250px;
+    height: 200px;
     margin-top: 10px;
-    border-radius: 10px;
-    overflow: hidden;
+}
+
+.loader {
+    border: 3px solid #222;
+    border-top: 3px solid #e11d48;
+    border-radius: 50%;
+    width: 25px;
+    height: 25px;
+    animation: spin 1s linear infinite;
+    margin: auto;
+}
+
+@keyframes spin {
+    100% { transform: rotate(360deg); }
 }
 </style>
 </head>
 
 <body>
 
-<header>
-☠ MIKAMI JUSTICE ☠
-</header>
+<div class="sidebar">
+<div class="logo">MIKAMI <span>OSINT</span></div>
 
-<div class="container">
+<div class="menu">
+<div onclick="showSearch()">🔍 Recherche</div>
+<div onclick="loadHistory()">📜 Historique</div>
+</div>
+</div>
 
-<div class="search-box">
+<div class="main">
+
+<div id="searchView" class="card">
+
+<div class="grid">
 <input id="prenom" placeholder="Prénom">
 <input id="nom" placeholder="Nom">
 <input id="phone" placeholder="Téléphone">
@@ -108,10 +119,12 @@ button:hover {
 <input id="username" placeholder="Username">
 <input id="ip" placeholder="IP">
 <input id="city" placeholder="Ville">
+</div>
 
-<button onclick="search()">JUDGEMENT</button>
+<button onclick="search()">Lancer analyse</button>
 
-<p id="status" class="status"></p>
+<div id="status"></div>
+
 </div>
 
 <div id="results"></div>
@@ -121,9 +134,14 @@ button:hover {
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
 <script>
+
+function showSearch() {
+    document.getElementById("results").innerHTML = "";
+}
+
 async function search() {
 
-    document.getElementById("status").innerHTML = "Analyse en cours...";
+    document.getElementById("status").innerHTML = '<div class="loader"></div>';
     document.getElementById("results").innerHTML = "";
 
     const body = {};
@@ -153,19 +171,14 @@ async function search() {
 
     const data = await res.json();
 
-    if (!data.data || data.data.results.length === 0) {
-        document.getElementById("status").innerHTML = "Aucun résultat.";
-        return;
-    }
-
-    document.getElementById("status").innerHTML = "Résultats trouvés";
+    document.getElementById("status").innerText = "Résultats";
 
     data.data.results.forEach((person, index) => {
 
         const div = document.createElement("div");
         div.className = "result-card";
 
-        let html = "<h3>Profil détecté</h3>";
+        let html = "";
 
         for (const key in person) {
             if (!key.startsWith("_")) {
@@ -192,19 +205,33 @@ async function search() {
 
                 const map = L.map("map_" + index).setView([lat, lon], 13);
 
-                setTimeout(() => {
-                    map.invalidateSize();
-                }, 100);
+                setTimeout(() => map.invalidateSize(), 100);
 
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '© OpenStreetMap'
-                }).addTo(map);
-
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
                 L.marker([lat, lon]).addTo(map);
             });
     });
 }
+
+async function loadHistory() {
+
+    document.getElementById("results").innerHTML = "Chargement...";
+
+    const res = await fetch("/history");
+    const data = await res.json();
+
+    let html = "";
+
+    data.reverse().forEach(item => {
+        html += `<div class="result-card">
+        <b>Recherche:</b> ${JSON.stringify(item.query)}
+        </div>`;
+    });
+
+    document.getElementById("results").innerHTML = html;
+}
+
 </script>
 
 </body>
-</html>          
+</html>

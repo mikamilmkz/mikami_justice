@@ -4,8 +4,11 @@ import os
 
 app = Flask(__name__)
 
-API_KEY = os.getenv("API_KEY")  # ✅ CORRIGÉ
+API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://brixhub.site/api/v1"
+
+# 🔥 HISTORIQUE EN MÉMOIRE
+history = []
 
 @app.route("/")
 def index():
@@ -27,10 +30,23 @@ def search():
             headers=headers
         )
 
-        return jsonify(response.json())
+        result = response.json()
+
+        # 🔥 SAUVEGARDE
+        history.append({
+            "query": data,
+            "result": result
+        })
+
+        return jsonify(result)
 
     except Exception as e:
         return jsonify({"error": str(e)})
+
+# 🔥 ROUTE HISTORIQUE
+@app.route("/history")
+def get_history():
+    return jsonify(history)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
