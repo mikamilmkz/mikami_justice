@@ -8,50 +8,70 @@ app = Flask(__name__)
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://brixhub.site/api/v1"
 
-# 🔥 CACHE MÉMOIRE
 cache = {}
-
 history = []
 
 
-# =========================
-# PAGE
-# =========================
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-# =========================
-# FORMAT RESULTATS
-# =========================
+def clean_value(value):
+    if value is None or value == "":
+        return "N/A"
+    return str(value)
+
+
 def format_results(results):
     output = ""
 
     for item in results:
+        telephone = (
+            item.get("telephone")
+            or item.get("mobile")
+            or item.get("tel")
+            or item.get("phone")
+            or "N/A"
+        )
+
+        adresse_complete = (
+            item.get("adresse_complete")
+            or item.get("adresse")
+            or item.get("address")
+            or "N/A"
+        )
+
+        complement = item.get("complement_adresse")
+        if complement and complement not in str(adresse_complete):
+            adresse_complete = f"{adresse_complete} {complement}"
+
         output += "────────────\n"
-
-        output += f"👤 Prénom : {item.get('prenom', 'N/A')}\n"
-        output += f"👤 Nom : {item.get('nom_famille', 'N/A')}\n"
-        output += f"📧 Email : {item.get('email', 'N/A')}\n"
-        output += f"📍 Ville : {item.get('ville', 'N/A')}\n"
-        output += f"📮 Code postal : {item.get('code_postal', 'N/A')}\n"
-        output += f"🎂 Naissance : {item.get('date_naissance', 'N/A')}\n"
-        output += f"💻 Username : {item.get('nom_utilisateur', 'N/A')}\n"
-
-        output += "\n"
+        output += f"👤 Prénom : {clean_value(item.get('prenom'))}\n"
+        output += f"👤 Nom : {clean_value(item.get('nom_famille'))}\n"
+        output += f"📧 Email : {clean_value(item.get('email'))}\n"
+        output += f"📱 Téléphone : {clean_value(telephone)}\n"
+        output += f"🏠 Adresse : {clean_value(adresse_complete)}\n"
+        output += f"📍 Ville : {clean_value(item.get('ville'))}\n"
+        output += f"📮 Code postal : {clean_value(item.get('code_postal'))}\n"
+        output += f"🌍 Pays : {clean_value(item.get('pays'))}\n"
+        output += f"🎂 Naissance : {clean_value(item.get('date_naissance'))}\n"
+        output += f"💻 Username : {clean_value(item.get('nom_utilisateur'))}\n"
+        output += f"🎯 Confiance : {clean_value(item.get('_confidence'))}%\n\n"
 
     return output
 
 
-# =========================
-# GESTION LIMITE DISCORD
-# =========================
 def build_response(results):
     formatted = format_results(results)
 
     if len(formatted) > 3500:
-        temp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
+        temp = tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".txt",
+            mode="w",
+            encoding="utf-8"
+        )
         temp.write(formatted)
         temp.close()
 
@@ -66,14 +86,10 @@ def build_response(results):
     }
 
 
-# =========================
-# APPEL API (AVEC CACHE)
-# =========================
 def call_brixhub(payload):
     try:
-        key = str(payload)
+        key = str(sorted(payload.items()))
 
-        # 🔥 CACHE
         if key in cache:
             return cache[key]
 
@@ -82,62 +98,89 @@ def call_brixhub(payload):
             "Content-Type": "application/json"
         }
 
-        r = requests.post(f"{BASE_URL}/search", json=payload, headers=headers, timeout=15)
-        data = r.json()
+        r = requests.post(
+            f"{BASE_URL}/search",
+            json=payload,
+            headers=headers,
+            timeout=20
+        )
 
+        data = r.json()
         results = data.get("data", {}).get("results", [])
 
         if not results:
-            result = {"type": "text", "content": "Aucun résultat trouvé"}
+            result = {
+                "type": "text",
+                "content": "Aucun résultat trouvé"
+            }
         else:
             result = build_response(results)
 
         cache[key] = result
-
         return result
 
     except Exception as e:
-        return {"type": "text", "content": f"Erreur API: {str(e)}"}
+        return {
+            "type": "text",
+            "content": f"Erreur API: {str(e)}"
+        }
 
 
-# =========================
-# API SIMPLE
-# =========================
+@app.route("/search", methods=["POST"])
+def search():
+    data = request.json or {}
+
+    clean_data = {
+        k: v for k, v in data.items()
+        if v not in ["", None]
+    }
+
+    if not clean_data:
+        return jsonify({"error": "Aucune donnée"}), 400
+
+    result = call_brixhub(clean_data)
+    history.append({"type": "site", "query": clean_data, "result": result})
+
+    return jsonify(result)
+
+
 @app.route("/api/search")
 def api_search():
     query = request.args.get("q")
 
     if not query:
-        return jsonify({"type": "text", "content": "Aucune recherche"}), 400
+        return jsonify({
+            "type": "text",
+            "content": "Aucune recherche"
+        }), 400
 
     result = call_brixhub({"query": query})
-    history.append(result)
+    history.append({"type": "simple", "query": query, "result": result})
 
     return jsonify(result)
 
 
-# =========================
-# API MULTI (OPTIMISÉ)
-# =========================
 @app.route("/api/multisearch", methods=["POST"])
 def api_multisearch():
-    data = request.json
+    data = request.json or {}
 
-    if not data:
-        return jsonify({"type": "text", "content": "Aucune donnée"}), 400
+    clean_data = {
+        k: v for k, v in data.items()
+        if v not in ["", None]
+    }
 
-    # 🔥 SUPPRIME CHAMPS VIDES
-    clean_data = {k: v for k, v in data.items() if v}
+    if not clean_data:
+        return jsonify({
+            "type": "text",
+            "content": "Aucune donnée"
+        }), 400
 
     result = call_brixhub(clean_data)
-    history.append(result)
+    history.append({"type": "multi", "query": clean_data, "result": result})
 
     return jsonify(result)
 
 
-# =========================
-# DOWNLOAD
-# =========================
 @app.route("/download")
 def download():
     path = request.args.get("path")
@@ -148,8 +191,10 @@ def download():
     return send_file(path, as_attachment=True)
 
 
-# =========================
-# RUN
-# =========================
+@app.route("/history")
+def get_history():
+    return jsonify(history)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
