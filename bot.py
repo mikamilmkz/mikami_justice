@@ -7,10 +7,12 @@ from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1507891823031619746  # remplace par l'ID de ton salon
+CHANNEL_ID = 123456789  # remplace par l'ID de ton salon
 
 BASE_URL = "https://mikami-justice.onrender.com"
 API_MULTI = f"{BASE_URL}/api/multisearch"
+
+LOGO_URL = "https://mikami-justice.onrender.com/static/logo.png"
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -25,57 +27,78 @@ def keep_alive():
         time.sleep(300)
 
 
-def split_pages(text, size=1800):
-    text = text or "Aucun résultat"
-    return [text[i:i + size] for i in range(0, len(text), size)] or ["Aucun résultat"]
+def extract_blocks(content):
+    blocks = [b.strip() for b in content.split("────────────") if b.strip()]
+    return blocks or ["Aucun résultat"]
+
+
+def get_confidence(block):
+    for line in block.splitlines():
+        if "Confiance" in line:
+            digits = "".join(c for c in line if c.isdigit())
+            if digits:
+                return int(digits)
+    return 0
+
+
+def color_from_confidence(confidence, default_color):
+    if confidence >= 70:
+        return 0x57F287
+    if confidence >= 40:
+        return 0xFEE75C
+    if confidence > 0:
+        return 0xED4245
+    return default_color
 
 
 class ResultPages(View):
-    def __init__(self, pages, title, color):
+    def __init__(self, blocks, title, default_color):
         super().__init__(timeout=300)
-        self.pages = pages
+        self.blocks = blocks
         self.title = title
-        self.color = color
+        self.default_color = default_color
         self.page = 0
 
     def make_embed(self):
+        block = self.blocks[self.page]
+        confidence = get_confidence(block)
+        color = color_from_confidence(confidence, self.default_color)
+
         embed = discord.Embed(
             title=self.title,
-            description=self.pages[self.page],
-            color=self.color
+            description=f"```txt\n{block[:3500]}\n```",
+            color=color
         )
+
+        embed.set_thumbnail(url=LOGO_URL)
         embed.set_footer(
-            text=f"Page {self.page + 1}/{len(self.pages)} • MIKAMI OSINT"
+            text=f"Résultat {self.page + 1}/{len(self.blocks)} • MIKAMI OSINT",
+            icon_url=LOGO_URL
         )
+
         return embed
 
     @discord.ui.button(label="⬅️", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: Button):
         if self.page > 0:
             self.page -= 1
-        await interaction.response.edit_message(
-            embed=self.make_embed(),
-            view=self
-        )
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, button: Button):
-        if self.page < len(self.pages) - 1:
+        if self.page < len(self.blocks) - 1:
             self.page += 1
-        await interaction.response.edit_message(
-            embed=self.make_embed(),
-            view=self
-        )
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
 
-async def send_result(interaction, data, title, color):
+async def send_result(interaction, data, title, default_color):
     if data.get("type") == "text":
         content = data.get("content", "Aucun résultat")
-        pages = split_pages(content)
+        blocks = extract_blocks(content)
 
-        paginator = ResultPages(pages, title, color)
+        paginator = ResultPages(blocks, title, default_color)
 
-        if len(pages) > 1:
+        if len(blocks) > 1:
             await interaction.followup.send(
                 embed=paginator.make_embed(),
                 view=paginator
@@ -86,9 +109,14 @@ async def send_result(interaction, data, title, color):
             )
 
     elif data.get("type") == "file":
-        await interaction.followup.send(
-            content=f"📁 Résultats complets : {BASE_URL}{data.get('url')}"
+        embed = discord.Embed(
+            title="📁 Résultats complets",
+            description=f"[Télécharger le fichier complet]({BASE_URL}{data.get('url')})",
+            color=0x57F287
         )
+        embed.set_thumbnail(url=LOGO_URL)
+        embed.set_footer(text="MIKAMI OSINT", icon_url=LOGO_URL)
+        await interaction.followup.send(embed=embed)
 
     else:
         await interaction.followup.send(
@@ -113,19 +141,15 @@ class NameModal(Modal, title="Recherche Nom + Prénom"):
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
             data = r.json()
-
             await send_result(
                 interaction,
                 data,
-                "👤 Résultat Nom + Prénom",
+                "👤 Recherche identité",
                 0x5865F2
             )
 
         except Exception as e:
-            await interaction.followup.send(
-                f"❌ Erreur : {e}",
-                ephemeral=True
-            )
+            await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
 
 class MultiModal(Modal, title="MultiSearch"):
@@ -152,19 +176,15 @@ class MultiModal(Modal, title="MultiSearch"):
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
             data = r.json()
-
             await send_result(
                 interaction,
                 data,
-                "⚡ Résultat MultiSearch",
+                "⚡ MultiSearch",
                 0xED4245
             )
 
         except Exception as e:
-            await interaction.followup.send(
-                f"❌ Erreur : {e}",
-                ephemeral=True
-            )
+            await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
 
 class Panel(View):
@@ -202,20 +222,17 @@ async def setup_panel():
 
     embed = discord.Embed(
         title="MIKAMI OSINT ⚖️",
-        description="Choisis une méthode de recherche.",
+        description=(
+            "**Panel de recherche connecté au site.**\n\n"
+            "👤 **Nom + Prénom** — recherche ciblée.\n"
+            "⚡ **MultiSearch** — recherche avancée avec plusieurs champs.\n\n"
+            "Clique sur un bouton pour commencer."
+        ),
         color=0x2B2D31
     )
-    embed.add_field(
-        name="👤 Nom + Prénom",
-        value="Recherche ciblée avec nom de famille + prénom.",
-        inline=False
-    )
-    embed.add_field(
-        name="⚡ MultiSearch",
-        value="Recherche avancée avec plusieurs champs.",
-        inline=False
-    )
-    embed.set_footer(text="MIKAMI OSINT")
+
+    embed.set_thumbnail(url=LOGO_URL)
+    embed.set_footer(text="MIKAMI OSINT • Analyse. Comprends. Agis.", icon_url=LOGO_URL)
 
     await channel.send(embed=embed, view=Panel())
 
