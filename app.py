@@ -65,21 +65,6 @@ def format_results(results):
 def build_response(results):
     formatted = format_results(results)
 
-    if len(formatted) > 3500:
-        temp = tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".txt",
-            mode="w",
-            encoding="utf-8"
-        )
-        temp.write(formatted)
-        temp.close()
-
-        return {
-            "type": "file",
-            "url": f"/download?path={temp.name}"
-        }
-
     return {
         "type": "text",
         "content": formatted
@@ -98,14 +83,14 @@ def call_brixhub(payload):
             "Content-Type": "application/json"
         }
 
-        r = requests.post(
+        response = requests.post(
             f"{BASE_URL}/search",
             json=payload,
             headers=headers,
             timeout=20
         )
 
-        data = r.json()
+        data = response.json()
         results = data.get("data", {}).get("results", [])
 
         if not results:
@@ -126,24 +111,39 @@ def call_brixhub(payload):
         }
 
 
+# IMPORTANT : route utilisée par le SITE
+# Elle renvoie le format original Brixhub pour que ton frontend continue à marcher.
 @app.route("/search", methods=["POST"])
 def search():
     data = request.json or {}
 
-    clean_data = {
-        k: v for k, v in data.items()
-        if v not in ["", None]
+    headers = {
+        "X-API-Key": API_KEY,
+        "Content-Type": "application/json"
     }
 
-    if not clean_data:
-        return jsonify({"error": "Aucune donnée"}), 400
+    try:
+        response = requests.post(
+            f"{BASE_URL}/search",
+            json=data,
+            headers=headers,
+            timeout=20
+        )
 
-    result = call_brixhub(clean_data)
-    history.append({"type": "site", "query": clean_data, "result": result})
+        result = response.json()
+        history.append({
+            "type": "site",
+            "query": data,
+            "result": result
+        })
 
-    return jsonify(result)
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
+# Route API simple pour le bot
 @app.route("/api/search")
 def api_search():
     query = request.args.get("q")
@@ -155,11 +155,16 @@ def api_search():
         }), 400
 
     result = call_brixhub({"query": query})
-    history.append({"type": "simple", "query": query, "result": result})
+    history.append({
+        "type": "simple",
+        "query": query,
+        "result": result
+    })
 
     return jsonify(result)
 
 
+# Route API multi pour le bot
 @app.route("/api/multisearch", methods=["POST"])
 def api_multisearch():
     data = request.json or {}
@@ -176,7 +181,11 @@ def api_multisearch():
         }), 400
 
     result = call_brixhub(clean_data)
-    history.append({"type": "multi", "query": clean_data, "result": result})
+    history.append({
+        "type": "multi",
+        "query": clean_data,
+        "result": result
+    })
 
     return jsonify(result)
 
