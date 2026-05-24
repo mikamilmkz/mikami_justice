@@ -10,44 +10,87 @@ BASE_URL = "https://brixhub.site/api/v1"
 # 🔥 HISTORIQUE EN MÉMOIRE
 history = []
 
+
+# =========================
+# PAGE PRINCIPALE
+# =========================
 @app.route("/")
 def index():
     return render_template("index.html")
 
+
+# =========================
+# RECHERCHE POUR TON SITE
+# =========================
 @app.route("/search", methods=["POST"])
 def search():
     data = request.json
+    query = data.get("query")
 
-    headers = {
-        "X-API-Key": API_KEY,
-        "Content-Type": "application/json"
-    }
+    if not query:
+        return jsonify({"error": "Aucune recherche"}), 400
 
+    result = call_brixhub(query)
+
+    history.append({"query": query, "result": result})
+
+    return jsonify({"result": result})
+
+
+# =========================
+# API POUR DISCORD BOT
+# =========================
+@app.route("/api/search")
+def api_search():
+    query = request.args.get("q")
+
+    if not query:
+        return jsonify({"result": "Aucune recherche"}), 400
+
+    result = call_brixhub(query)
+
+    history.append({"query": query, "result": result})
+
+    return jsonify({"result": result})
+
+
+# =========================
+# APPEL BRIXHUB
+# =========================
+def call_brixhub(query):
     try:
-        response = requests.post(
-            f"{BASE_URL}/search",
-            json=data,
-            headers=headers
-        )
+        headers = {
+            "X-API-Key": API_KEY,
+            "Content-Type": "application/json"
+        }
 
-        result = response.json()
+        payload = {
+            "query": query
+        }
 
-        # 🔥 SAUVEGARDE
-        history.append({
-            "query": data,
-            "result": result
-        })
+        # 👉 endpoint Brixhub (à adapter si besoin)
+        url = f"{BASE_URL}/search"
 
-        return jsonify(result)
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        data = r.json()
+
+        return str(data)
 
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return f"Erreur API: {str(e)}"
 
-# 🔥 ROUTE HISTORIQUE
+
+# =========================
+# HISTORIQUE (OPTION)
+# =========================
 @app.route("/history")
 def get_history():
     return jsonify(history)
 
+
+# =========================
+# LANCEMENT
+# =========================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
