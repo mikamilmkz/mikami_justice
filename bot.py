@@ -1,13 +1,13 @@
 import os
+import time
+import threading
+import requests
 import discord
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
-import requests
-import threading
-import time
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1507891823031619746  # remplace par l'ID du salon
+CHANNEL_ID = 1507891823031619746  # remplace par l'ID de ton salon
 
 BASE_URL = "https://mikami-justice.onrender.com"
 API_MULTI = f"{BASE_URL}/api/multisearch"
@@ -25,15 +25,65 @@ def keep_alive():
         time.sleep(300)
 
 
+def split_pages(text, size=1800):
+    text = text or "Aucun résultat"
+    return [text[i:i + size] for i in range(0, len(text), size)] or ["Aucun résultat"]
+
+
+class ResultPages(View):
+    def __init__(self, pages, title, color):
+        super().__init__(timeout=300)
+        self.pages = pages
+        self.title = title
+        self.color = color
+        self.page = 0
+
+    def make_embed(self):
+        embed = discord.Embed(
+            title=self.title,
+            description=self.pages[self.page],
+            color=self.color
+        )
+        embed.set_footer(
+            text=f"Page {self.page + 1}/{len(self.pages)} • MIKAMI OSINT"
+        )
+        return embed
+
+    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: Button):
+        if self.page > 0:
+            self.page -= 1
+        await interaction.response.edit_message(
+            embed=self.make_embed(),
+            view=self
+        )
+
+    @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: Button):
+        if self.page < len(self.pages) - 1:
+            self.page += 1
+        await interaction.response.edit_message(
+            embed=self.make_embed(),
+            view=self
+        )
+
+
 async def send_result(interaction, data, title, color):
     if data.get("type") == "text":
-        embed = discord.Embed(
-            title=title,
-            description=data.get("content", "Aucun résultat"),
-            color=color
-        )
-        embed.set_footer(text="MIKAMI OSINT")
-        await interaction.followup.send(embed=embed)
+        content = data.get("content", "Aucun résultat")
+        pages = split_pages(content)
+
+        paginator = ResultPages(pages, title, color)
+
+        if len(pages) > 1:
+            await interaction.followup.send(
+                embed=paginator.make_embed(),
+                view=paginator
+            )
+        else:
+            await interaction.followup.send(
+                embed=paginator.make_embed()
+            )
 
     elif data.get("type") == "file":
         await interaction.followup.send(
@@ -63,6 +113,7 @@ class NameModal(Modal, title="Recherche Nom + Prénom"):
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
             data = r.json()
+
             await send_result(
                 interaction,
                 data,
@@ -71,7 +122,10 @@ class NameModal(Modal, title="Recherche Nom + Prénom"):
             )
 
         except Exception as e:
-            await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ Erreur : {e}",
+                ephemeral=True
+            )
 
 
 class MultiModal(Modal, title="MultiSearch"):
@@ -79,7 +133,7 @@ class MultiModal(Modal, title="MultiSearch"):
     prenom = TextInput(label="Prénom", required=False)
     ville = TextInput(label="Ville", required=False)
     email = TextInput(label="Email", required=False)
-    username = TextInput(label="Username", required=False)
+    telephone = TextInput(label="Téléphone", required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
@@ -89,7 +143,7 @@ class MultiModal(Modal, title="MultiSearch"):
             "prenom": self.prenom.value.strip(),
             "ville": self.ville.value.strip(),
             "email": self.email.value.strip(),
-            "nom_utilisateur": self.username.value.strip(),
+            "telephone": self.telephone.value.strip(),
             "flexible": True
         }
 
@@ -98,6 +152,7 @@ class MultiModal(Modal, title="MultiSearch"):
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
             data = r.json()
+
             await send_result(
                 interaction,
                 data,
@@ -106,7 +161,10 @@ class MultiModal(Modal, title="MultiSearch"):
             )
 
         except Exception as e:
-            await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ Erreur : {e}",
+                ephemeral=True
+            )
 
 
 class Panel(View):
@@ -175,6 +233,8 @@ async def on_ready():
 
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN manquant. Fais: export DISCORD_TOKEN='TON_TOKEN'")
+    raise RuntimeError(
+        "DISCORD_TOKEN manquant. Fais: export DISCORD_TOKEN='TON_TOKEN'"
+    )
 
 bot.run(TOKEN)
