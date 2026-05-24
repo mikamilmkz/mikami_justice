@@ -7,7 +7,9 @@ from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1507891823031619746  # remplace par l'ID de ton salon
+
+SEARCH_CHANNEL_ID = 1507891823031619746
+RESULTS_CHANNEL_ID = 1507891868489482431
 
 BASE_URL = "https://mikami-justice.onrender.com"
 API_MULTI = f"{BASE_URL}/api/multisearch"
@@ -84,11 +86,7 @@ class ResultPages(View):
 
         embed = discord.Embed(
             title=f"⚖️ {self.title}",
-            description=(
-                "```txt\n"
-                f"{block[:3200]}\n"
-                "```"
-            ),
+            description=f"```txt\n{block[:3200]}\n```",
             color=color
         )
 
@@ -106,43 +104,53 @@ class ResultPages(View):
 
         embed.set_thumbnail(url=LOGO_URL)
         embed.set_footer(
-            text="MIKAMI OSINT • Analyse. Comprends. Agis.",
+            text="MIKAMI OSINT • Résultat privé",
             icon_url=LOGO_URL
         )
 
         return embed
 
-    @discord.ui.button(
-        label="⬅️ Précédent",
-        style=discord.ButtonStyle.secondary,
-        custom_id="result_previous"
-    )
+    @discord.ui.button(label="⬅️ Précédent", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: Button):
         if self.page > 0:
             self.page -= 1
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
-    @discord.ui.button(
-        label="➡️ Suivant",
-        style=discord.ButtonStyle.secondary,
-        custom_id="result_next"
-    )
+    @discord.ui.button(label="➡️ Suivant", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, button: Button):
         if self.page < len(self.blocks) - 1:
             self.page += 1
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
 
+async def log_search(user, search_type):
+    channel = bot.get_channel(RESULTS_CHANNEL_ID)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="📡 Nouvelle recherche",
+        description=(
+            f"👤 Utilisateur : {user.mention}\n"
+            f"🔎 Type : **{search_type}**\n"
+            f"🔒 Résultat : privé"
+        ),
+        color=0x2B2D31
+    )
+    embed.set_footer(text="MIKAMI OSINT • Logs", icon_url=LOGO_URL)
+
+    await channel.send(embed=embed)
+
+
 async def send_result(interaction, data, title, default_color):
     if data.get("type") == "text":
-        content = data.get("content", "Aucun résultat")
-        blocks = split_results(content)
-
+        blocks = split_results(data.get("content", "Aucun résultat"))
         paginator = ResultPages(blocks, title, default_color)
 
         await interaction.followup.send(
             embed=paginator.make_embed(),
-            view=paginator if len(blocks) > 1 else None
+            view=paginator if len(blocks) > 1 else None,
+            ephemeral=True
         )
 
     elif data.get("type") == "file":
@@ -152,12 +160,9 @@ async def send_result(interaction, data, title, default_color):
             color=0x57F287
         )
         embed.set_thumbnail(url=LOGO_URL)
-        embed.set_footer(
-            text="MIKAMI OSINT • Export complet",
-            icon_url=LOGO_URL
-        )
+        embed.set_footer(text="MIKAMI OSINT • Export privé", icon_url=LOGO_URL)
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     else:
         await interaction.followup.send(
@@ -171,7 +176,7 @@ class NameModal(Modal, title="Recherche Identité"):
     prenom = TextInput(label="Prénom", placeholder="Ex: Noah")
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
 
         payload = {
             "nom_famille": self.nom.value.strip(),
@@ -182,7 +187,9 @@ class NameModal(Modal, title="Recherche Identité"):
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
             data = r.json()
+
             await send_result(interaction, data, "Recherche Identité", 0x5865F2)
+            await log_search(interaction.user, "Identité")
 
         except Exception as e:
             await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
@@ -196,7 +203,7 @@ class MultiModal(Modal, title="MultiSearch"):
     telephone = TextInput(label="Téléphone", required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
 
         payload = {
             "nom_famille": self.nom.value.strip(),
@@ -212,7 +219,9 @@ class MultiModal(Modal, title="MultiSearch"):
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
             data = r.json()
+
             await send_result(interaction, data, "MultiSearch", 0xED4245)
+            await log_search(interaction.user, "MultiSearch")
 
         except Exception as e:
             await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
@@ -241,10 +250,10 @@ class Panel(View):
 
 async def setup_panel():
     await bot.wait_until_ready()
-    channel = bot.get_channel(CHANNEL_ID)
+    channel = bot.get_channel(SEARCH_CHANNEL_ID)
 
     if not channel:
-        print("Salon introuvable")
+        print("Salon search introuvable")
         return
 
     async for msg in channel.history(limit=10):
@@ -254,13 +263,16 @@ async def setup_panel():
     embed = discord.Embed(
         title="⚖️ MIKAMI OSINT",
         description=(
-            "**Panel de recherche connecté à la plateforme.**\n\n"
+            "**Panel de recherche privé.**\n\n"
             "👤 **Identité** — recherche ciblée par nom + prénom.\n"
             "⚡ **MultiSearch** — recherche avancée avec plusieurs champs.\n\n"
-            "Sélectionne une action pour commencer."
+            "🔒 Les résultats sont visibles uniquement par l’utilisateur."
         ),
         color=0x2B2D31
     )
+
+    embed.add_field(name="🟢 API", value="Online", inline=True)
+    embed.add_field(name="📡 Bot", value="Railway Connected", inline=True)
 
     embed.set_thumbnail(url=LOGO_URL)
     embed.set_footer(
@@ -284,8 +296,6 @@ async def on_ready():
 
 
 if not TOKEN:
-    raise RuntimeError(
-        "DISCORD_TOKEN manquant. Fais: export DISCORD_TOKEN='TON_TOKEN'"
-    )
+    raise RuntimeError("DISCORD_TOKEN manquant")
 
 bot.run(TOKEN)
