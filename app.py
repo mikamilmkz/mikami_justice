@@ -68,19 +68,27 @@ def call_brixhub(query):
             "query": query
         }
 
-        # 👉 endpoint Brixhub (à adapter si besoin)
         url = f"{BASE_URL}/search"
 
         r = requests.post(url, json=payload, headers=headers, timeout=10)
-
         data = r.json()
 
-        return str(data)
+        # 🔥 FORMAT PROPRE
+        results = data.get("data", {}).get("results", [])
+
+        if not results:
+            return "Aucun résultat trouvé"
+
+        # 👉 exemple : afficher les 3 premiers
+        output = ""
+        for item in results[:3]:
+            output += f"• {item}\n"
+
+        return output
 
     except Exception as e:
         return f"Erreur API: {str(e)}"
-
-
+           
 # =========================
 # HISTORIQUE (OPTION)
 # =========================
