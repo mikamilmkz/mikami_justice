@@ -20,7 +20,7 @@ def index():
 
 
 # =========================
-# RECHERCHE POUR TON SITE
+# RECHERCHE SIMPLE (SITE)
 # =========================
 @app.route("/search", methods=["POST"])
 def search():
@@ -30,15 +30,15 @@ def search():
     if not query:
         return jsonify({"error": "Aucune recherche"}), 400
 
-    result = call_brixhub(query)
+    result = call_brixhub_simple(query)
 
-    history.append({"query": query, "result": result})
+    history.append({"type": "simple", "query": query, "result": result})
 
     return jsonify({"result": result})
 
 
 # =========================
-# API POUR DISCORD BOT
+# API BOT (RECHERCHE SIMPLE)
 # =========================
 @app.route("/api/search")
 def api_search():
@@ -47,17 +47,31 @@ def api_search():
     if not query:
         return jsonify({"result": "Aucune recherche"}), 400
 
-    result = call_brixhub(query)
+    result = call_brixhub_simple(query)
 
-    history.append({"query": query, "result": result})
+    history.append({"type": "simple", "query": query, "result": result})
 
     return jsonify({"result": result})
 
 
 # =========================
-# APPEL BRIXHUB
+# API BOT (MULTI SEARCH)
 # =========================
-def call_brixhub(query):
+@app.route("/api/multisearch", methods=["POST"])
+def api_multisearch():
+    data = request.json
+
+    result = call_brixhub_multi(data)
+
+    history.append({"type": "multi", "query": data, "result": result})
+
+    return jsonify({"result": result})
+
+
+# =========================
+# BRIxHUB SIMPLE
+# =========================
+def call_brixhub_simple(query):
     try:
         headers = {
             "X-API-Key": API_KEY,
@@ -73,13 +87,11 @@ def call_brixhub(query):
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         data = r.json()
 
-        # 🔥 FORMAT PROPRE
         results = data.get("data", {}).get("results", [])
 
         if not results:
             return "Aucun résultat trouvé"
 
-        # 👉 exemple : afficher les 3 premiers
         output = ""
         for item in results[:3]:
             output += f"• {item}\n"
@@ -88,9 +100,41 @@ def call_brixhub(query):
 
     except Exception as e:
         return f"Erreur API: {str(e)}"
-           
+
+
 # =========================
-# HISTORIQUE (OPTION)
+# BRIxHUB MULTI
+# =========================
+def call_brixhub_multi(data):
+    try:
+        headers = {
+            "X-API-Key": API_KEY,
+            "Content-Type": "application/json"
+        }
+
+        # 👉 envoie directement les champs remplis
+        url = f"{BASE_URL}/search"
+
+        r = requests.post(url, json=data, headers=headers, timeout=10)
+        res = r.json()
+
+        results = res.get("data", {}).get("results", [])
+
+        if not results:
+            return "Aucun résultat trouvé"
+
+        output = ""
+        for item in results[:3]:
+            output += f"• {item}\n"
+
+        return output
+
+    except Exception as e:
+        return f"Erreur API: {str(e)}"
+
+
+# =========================
+# HISTORIQUE
 # =========================
 @app.route("/history")
 def get_history():
