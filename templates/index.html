@@ -78,6 +78,8 @@ button {
 .map {
     height: 200px;
     margin-top: 10px;
+    border-radius: 10px;
+    overflow: hidden;
 }
 
 .loader {
@@ -99,13 +101,14 @@ button {
 <body>
 
 <div class="sidebar">
-<div class="logo" style="text-align:center;">
-    <img src="/static/logo.png" style="width:120px;">
-</div>
-<div class="menu">
-<div onclick="showSearch()">🔍 Recherche</div>
-<div onclick="loadHistory()">📜 Historique</div>
-</div>
+    <div class="logo" style="text-align:center;">
+        <img src="/static/logo.png" style="width:120px;">
+    </div>
+
+    <div class="menu">
+        <div onclick="showSearch()">🔍 Recherche</div>
+        <div onclick="loadHistory()">📜 Historique</div>
+    </div>
 </div>
 
 <div class="main">
@@ -113,19 +116,18 @@ button {
 <div id="searchView" class="card">
 
 <div class="grid">
-<input id="prenom" placeholder="Prénom">
-<input id="nom" placeholder="Nom">
-<input id="phone" placeholder="Téléphone">
-<input id="email" placeholder="Email">
-<input id="username" placeholder="Username">
-<input id="ip" placeholder="IP">
-<input id="city" placeholder="Ville">
+    <input id="prenom" placeholder="Prénom">
+    <input id="nom" placeholder="Nom">
+    <input id="phone" placeholder="Téléphone">
+    <input id="email" placeholder="Email">
+    <input id="username" placeholder="Username">
+    <input id="ip" placeholder="IP">
+    <input id="city" placeholder="Ville">
 </div>
 
 <button onclick="search()">Lancer analyse</button>
 
 <div id="status"></div>
-
 </div>
 
 <div id="results"></div>
@@ -138,6 +140,45 @@ button {
 
 function showSearch() {
     document.getElementById("results").innerHTML = "";
+}
+
+function buildAddress(person) {
+    const adresse = person.adresse || person.adresse_complete || person.address || "";
+    const codePostal = person.code_postal || "";
+    const ville = person.ville || "";
+    const pays = person.pays || "France";
+
+    return [adresse, codePostal, ville, pays]
+        .filter(v => v && String(v).trim() !== "")
+        .join(" ");
+}
+
+function addMap(person, index) {
+    const adresseComplete = buildAddress(person);
+
+    if (!adresseComplete.trim()) return;
+
+    fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(adresseComplete)}`)
+        .then(res => res.json())
+        .then(loc => {
+            if (!loc || loc.length === 0) return;
+
+            const lat = loc[0].lat;
+            const lon = loc[0].lon;
+
+            const map = L.map("map_" + index).setView([lat, lon], 13);
+
+            setTimeout(() => {
+                map.invalidateSize();
+            }, 100);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap'
+            }).addTo(map);
+
+            L.marker([lat, lon]).addTo(map);
+        })
+        .catch(() => {});
 }
 
 async function search() {
@@ -164,54 +205,50 @@ async function search() {
 
     body.flexible = true;
 
-    const res = await fetch("/search", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(body)
-    });
+    try {
+        const res = await fetch("/search", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body)
+        });
 
-    const data = await res.json();
+        const data = await res.json();
 
-    document.getElementById("status").innerText = "Résultats";
+        document.getElementById("status").innerText = "Résultats";
 
-    data.data.results.forEach((person, index) => {
-
-        const div = document.createElement("div");
-        div.className = "result-card";
-
-        let html = "";
-
-        for (const key in person) {
-            if (!key.startsWith("_")) {
-                html += `<p><b>${key}:</b> ${person[key]}</p>`;
-            }
+        if (!data.data || !data.data.results || data.data.results.length === 0) {
+            document.getElementById("results").innerHTML = `
+                <div class="result-card">Aucun résultat trouvé</div>
+            `;
+            return;
         }
 
-        html += `<div id="map_${index}" class="map"></div>`;
+        data.data.results.forEach((person, index) => {
+            const div = document.createElement("div");
+            div.className = "result-card";
 
-        div.innerHTML = html;
-        document.getElementById("results").appendChild(div);
+            let html = "";
 
-        const adresse = person.adresse || person.ville || "";
+            for (const key in person) {
+                if (!key.startsWith("_")) {
+                    html += `<p><b>${key}:</b> ${person[key]}</p>`;
+                }
+            }
 
-        if (!adresse) return;
+            html += `<div id="map_${index}" class="map"></div>`;
 
-        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(adresse)}`)
-            .then(res => res.json())
-            .then(loc => {
-                if (loc.length === 0) return;
+            div.innerHTML = html;
+            document.getElementById("results").appendChild(div);
 
-                const lat = loc[0].lat;
-                const lon = loc[0].lon;
+            addMap(person, index);
+        });
 
-                const map = L.map("map_" + index).setView([lat, lon], 13);
-
-                setTimeout(() => map.invalidateSize(), 100);
-
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-                L.marker([lat, lon]).addTo(map);
-            });
-    });
+    } catch (error) {
+        document.getElementById("status").innerText = "Erreur";
+        document.getElementById("results").innerHTML = `
+            <div class="result-card">Erreur lors de la recherche</div>
+        `;
+    }
 }
 
 async function loadHistory() {
@@ -225,7 +262,7 @@ async function loadHistory() {
 
     data.reverse().forEach(item => {
         html += `<div class="result-card">
-        <b>Recherche:</b> ${JSON.stringify(item.query)}
+            <b>Recherche:</b> ${JSON.stringify(item.query)}
         </div>`;
     });
 

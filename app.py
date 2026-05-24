@@ -63,11 +63,9 @@ def format_results(results):
 
 
 def build_response(results):
-    formatted = format_results(results)
-
     return {
         "type": "text",
-        "content": formatted
+        "content": format_results(results)
     }
 
 
@@ -111,8 +109,6 @@ def call_brixhub(payload):
         }
 
 
-# IMPORTANT : route utilisée par le SITE
-# Elle renvoie le format original Brixhub pour que ton frontend continue à marcher.
 @app.route("/search", methods=["POST"])
 def search():
     data = request.json or {}
@@ -131,11 +127,7 @@ def search():
         )
 
         result = response.json()
-        history.append({
-            "type": "site",
-            "query": data,
-            "result": result
-        })
+        history.append({"type": "site", "query": data, "result": result})
 
         return jsonify(result)
 
@@ -143,7 +135,6 @@ def search():
         return jsonify({"error": str(e)}), 500
 
 
-# Route API simple pour le bot
 @app.route("/api/search")
 def api_search():
     query = request.args.get("q")
@@ -155,16 +146,11 @@ def api_search():
         }), 400
 
     result = call_brixhub({"query": query})
-    history.append({
-        "type": "simple",
-        "query": query,
-        "result": result
-    })
+    history.append({"type": "simple", "query": query, "result": result})
 
     return jsonify(result)
 
 
-# Route API multi pour le bot
 @app.route("/api/multisearch", methods=["POST"])
 def api_multisearch():
     data = request.json or {}
@@ -181,11 +167,7 @@ def api_multisearch():
         }), 400
 
     result = call_brixhub(clean_data)
-    history.append({
-        "type": "multi",
-        "query": clean_data,
-        "result": result
-    })
+    history.append({"type": "multi", "query": clean_data, "result": result})
 
     return jsonify(result)
 
@@ -206,4 +188,5 @@ def get_history():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
