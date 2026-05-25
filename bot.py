@@ -1,8 +1,4 @@
-import os
-import time
-import threading
-import requests
-import discord
+import os, time, threading, requests, discord
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 
@@ -29,16 +25,14 @@ def keep_alive():
 
 
 def split_results(content):
-    blocks = [b.strip() for b in content.split("────────────") if b.strip()]
-    return blocks or ["Aucun résultat"]
+    return [b.strip() for b in content.split("────────────") if b.strip()] or ["Aucun résultat"]
 
 
 def get_confidence(block):
     for line in block.splitlines():
         if "Confiance" in line:
             digits = "".join(c for c in line if c.isdigit())
-            if digits:
-                return int(digits)
+            return int(digits) if digits else 0
     return 0
 
 
@@ -52,22 +46,18 @@ def confidence_label(score):
     return "⚫ Confiance inconnue"
 
 
-def color_from_confidence(score, default_color):
+def color_from_confidence(score, default):
     if score >= 70:
         return 0x57F287
     if score >= 40:
         return 0xFEE75C
     if score > 0:
         return 0xED4245
-    return default_color
+    return default
 
 
 def clean_block(block):
-    lines = []
-    for line in block.splitlines():
-        if "N/A" in line:
-            continue
-        lines.append(line)
+    lines = [line for line in block.splitlines() if "N/A" not in line]
     return "\n".join(lines) or "Aucune donnée exploitable"
 
 
@@ -80,43 +70,30 @@ class ResultPages(View):
         self.page = 0
 
     def make_embed(self):
-        block = clean_block(self.blocks[self.page])
-        confidence = get_confidence(self.blocks[self.page])
-        color = color_from_confidence(confidence, self.default_color)
+        raw = self.blocks[self.page]
+        block = clean_block(raw)
+        confidence = get_confidence(raw)
 
         embed = discord.Embed(
             title=f"⚖️ {self.title}",
             description=f"```txt\n{block[:3200]}\n```",
-            color=color
+            color=color_from_confidence(confidence, self.default_color)
         )
 
-        embed.add_field(
-            name="📊 Évaluation",
-            value=confidence_label(confidence),
-            inline=True
-        )
-
-        embed.add_field(
-            name="📄 Résultat",
-            value=f"{self.page + 1}/{len(self.blocks)}",
-            inline=True
-        )
+        embed.add_field(name="📊 Évaluation", value=confidence_label(confidence), inline=True)
+        embed.add_field(name="📄 Résultat", value=f"{self.page + 1}/{len(self.blocks)}", inline=True)
 
         embed.set_thumbnail(url=LOGO_URL)
-        embed.set_footer(
-            text="MIKAMI OSINT • Résultat privé",
-            icon_url=LOGO_URL
-        )
-
+        embed.set_footer(text="MIKAMI OSINT • Résultat privé", icon_url=LOGO_URL)
         return embed
 
-    @discord.ui.button(label="⬅️ Précédent", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⬅️ Précédent", style=discord.ButtonStyle.secondary, custom_id="prev_result")
     async def previous(self, interaction: discord.Interaction, button: Button):
         if self.page > 0:
             self.page -= 1
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
-    @discord.ui.button(label="➡️ Suivant", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="➡️ Suivant", style=discord.ButtonStyle.secondary, custom_id="next_result")
     async def next(self, interaction: discord.Interaction, button: Button):
         if self.page < len(self.blocks) - 1:
             self.page += 1
@@ -130,28 +107,22 @@ async def log_search(user, search_type):
 
     embed = discord.Embed(
         title="📡 Nouvelle recherche",
-        description=(
-            f"👤 Utilisateur : {user.mention}\n"
-            f"🔎 Type : **{search_type}**\n"
-            f"🔒 Résultat : privé"
-        ),
+        description=f"👤 Utilisateur : {user.mention}\n🔎 Type : **{search_type}**\n🔒 Résultat : privé",
         color=0x2B2D31
     )
     embed.set_footer(text="MIKAMI OSINT • Logs", icon_url=LOGO_URL)
-
     await channel.send(embed=embed)
 
 
-async def send_result(interaction, data, title, default_color):
+async def send_result(interaction, data, title, color):
     if data.get("type") == "text":
         blocks = split_results(data.get("content", "Aucun résultat"))
-        paginator = ResultPages(blocks, title, default_color)
+        paginator = ResultPages(blocks, title, color)
 
-        await interaction.followup.send(
-            embed=paginator.make_embed(),
-            view=paginator if len(blocks) > 1 else None,
-            ephemeral=True
-        )
+        if len(blocks) > 1:
+            await interaction.followup.send(embed=paginator.make_embed(), view=paginator, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=paginator.make_embed(), ephemeral=True)
 
     elif data.get("type") == "file":
         embed = discord.Embed(
@@ -161,14 +132,10 @@ async def send_result(interaction, data, title, default_color):
         )
         embed.set_thumbnail(url=LOGO_URL)
         embed.set_footer(text="MIKAMI OSINT • Export privé", icon_url=LOGO_URL)
-
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     else:
-        await interaction.followup.send(
-            content=f"⚠️ Réponse inattendue : {data}",
-            ephemeral=True
-        )
+        await interaction.followup.send(f"⚠️ Réponse inattendue : {data}", ephemeral=True)
 
 
 class NameModal(Modal, title="Recherche Identité"):
@@ -186,11 +153,8 @@ class NameModal(Modal, title="Recherche Identité"):
 
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
-            data = r.json()
-
-            await send_result(interaction, data, "Recherche Identité", 0x5865F2)
+            await send_result(interaction, r.json(), "Recherche Identité", 0x5865F2)
             await log_search(interaction.user, "Identité")
-
         except Exception as e:
             await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
@@ -218,11 +182,8 @@ class MultiModal(Modal, title="MultiSearch"):
 
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
-            data = r.json()
-
-            await send_result(interaction, data, "MultiSearch", 0xED4245)
+            await send_result(interaction, r.json(), "MultiSearch", 0xED4245)
             await log_search(interaction.user, "MultiSearch")
-
         except Exception as e:
             await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
@@ -231,19 +192,11 @@ class Panel(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="👤 Identité",
-        style=discord.ButtonStyle.primary,
-        custom_id="btn_identity"
-    )
+    @discord.ui.button(label="👤 Identité", style=discord.ButtonStyle.primary, custom_id="btn_identity")
     async def identity(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(NameModal())
 
-    @discord.ui.button(
-        label="⚡ MultiSearch",
-        style=discord.ButtonStyle.danger,
-        custom_id="btn_multi"
-    )
+    @discord.ui.button(label="⚡ MultiSearch", style=discord.ButtonStyle.danger, custom_id="btn_multi")
     async def multi(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(MultiModal())
 
@@ -275,10 +228,7 @@ async def setup_panel():
     embed.add_field(name="📡 Bot", value="Railway Connected", inline=True)
 
     embed.set_thumbnail(url=LOGO_URL)
-    embed.set_footer(
-        text="MIKAMI OSINT • Analyse. Comprends. Agis.",
-        icon_url=LOGO_URL
-    )
+    embed.set_footer(text="MIKAMI OSINT • Analyse. Comprends. Agis.", icon_url=LOGO_URL)
 
     await channel.send(embed=embed, view=Panel())
 
