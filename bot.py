@@ -100,17 +100,28 @@ class ResultPages(View):
         await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
 
-async def log_search(user, search_type):
+async def log_search(user, search_type, total):
     channel = bot.get_channel(RESULTS_CHANNEL_ID)
+
     if not channel:
         return
 
     embed = discord.Embed(
         title="📡 Nouvelle recherche",
-        description=f"👤 Utilisateur : {user.mention}\n🔎 Type : **{search_type}**\n🔒 Résultat : privé",
+        description=(
+            f"👤 Utilisateur : {user.mention}\n"
+            f"🔎 Type : **{search_type}**\n"
+            f"📊 Résultats : **{total}**\n"
+            f"🔒 Données : privées"
+        ),
         color=0x2B2D31
     )
-    embed.set_footer(text="MIKAMI OSINT • Logs", icon_url=LOGO_URL)
+
+    embed.set_footer(
+        text="MIKAMI OSINT • Logs",
+        icon_url=LOGO_URL
+    )
+
     await channel.send(embed=embed)
 
 
