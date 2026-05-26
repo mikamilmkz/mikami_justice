@@ -164,7 +164,7 @@ class MultiModal(Modal, title="MultiSearch"):
     prenom = TextInput(label="Prénom", required=False)
     ville = TextInput(label="Ville", required=False)
     email = TextInput(label="Email", required=False)
-    telephone = TextInput(label="Téléphone", required=False)
+    date_naissance = TextInput(label="Date de naissance", required=False, placeholder="AAAA-MM-JJ")
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
@@ -174,19 +174,42 @@ class MultiModal(Modal, title="MultiSearch"):
             "prenom": self.prenom.value.strip(),
             "ville": self.ville.value.strip(),
             "email": self.email.value.strip(),
+            "date_naissance": self.date_naissance.value.strip(),
+            "flexible": True
+        }
+
+        payload = {k: v for k, v in payload.items() if v not in ["", None]}
+
+        try:
+            r = requests.post(API_MULTI, json=payload, timeout=30)
+            data = r.json()
+
+            total = await send_result(interaction, data, "MultiSearch", 0xED4245)
+            await log_search(interaction.user, "MultiSearch", total)
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
+
+class PhoneModal(Modal, title="Recherche Téléphone"):
+    telephone = TextInput(label="Téléphone", placeholder="Ex: 0612345678")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        payload = {
             "telephone": self.telephone.value.strip(),
             "flexible": True
         }
 
-        payload = {k: v for k, v in payload.items() if v}
-
         try:
             r = requests.post(API_MULTI, json=payload, timeout=30)
-            await send_result(interaction, r.json(), "MultiSearch", 0xED4245)
-            await log_search(interaction.user, "MultiSearch")
+            data = r.json()
+
+            total = await send_result(interaction, data, "Recherche Téléphone", 0x57F287)
+            await log_search(interaction.user, "Téléphone", total)
+
         except Exception as e:
             await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
-
 
 class Panel(View):
     def __init__(self):
@@ -200,6 +223,9 @@ class Panel(View):
     async def multi(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(MultiModal())
 
+    @discord.ui.button(label="📱 Téléphone", style=discord.ButtonStyle.success, custom_id="btn_phone")
+    async def phone(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(PhoneModal())
 
 async def setup_panel():
     await bot.wait_until_ready()
