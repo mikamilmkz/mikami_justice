@@ -34,13 +34,14 @@ def search():
 
         result = response.json()
 
+        data_block = result.get("data") or {}
+        results = data_block.get("results") or []
+        meta = result.get("meta") or {}
+
         history.append({
             "type": "site",
             "query": data,
-            "total": result.get("meta", {}).get(
-                "total",
-                len(result.get("data", {}).get("results", []))
-            )
+            "total": meta.get("total", len(results))
         })
 
         return jsonify(result)
@@ -87,8 +88,9 @@ def api_multisearch():
 
         result = response.json()
 
-        results = result.get("data", {}).get("results", [])
-        meta = result.get("meta", {})
+        data_block = result.get("data") or {}
+        results = data_block.get("results") or []
+        meta = result.get("meta") or {}
 
         history.append({
             "type": "bot",
