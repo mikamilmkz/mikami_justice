@@ -1,112 +1,18 @@
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify
 import requests
 import os
-import tempfile
 
 app = Flask(__name__)
 
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://brixhub.site/api/v1"
 
-cache = {}
 history = []
 
 
 @app.route("/")
 def index():
     return render_template("index.html")
-
-
-def clean_value(value):
-    if value is None or value == "":
-        return "N/A"
-    return str(value)
-
-
-def format_results(results):
-    output = ""
-
-    for item in results:
-        telephone = (
-            item.get("telephone")
-            or item.get("mobile")
-            or item.get("tel")
-            or item.get("phone")
-            or "N/A"
-        )
-
-        adresse_complete = (
-            item.get("adresse_complete")
-            or item.get("adresse")
-            or item.get("address")
-            or "N/A"
-        )
-
-        complement = item.get("complement_adresse")
-        if complement and complement not in str(adresse_complete):
-            adresse_complete = f"{adresse_complete} {complement}"
-
-        output += "────────────\n"
-        output += f"👤 Prénom : {clean_value(item.get('prenom'))}\n"
-        output += f"👤 Nom : {clean_value(item.get('nom_famille'))}\n"
-        output += f"📧 Email : {clean_value(item.get('email'))}\n"
-        output += f"📱 Téléphone : {clean_value(telephone)}\n"
-        output += f"🏠 Adresse : {clean_value(adresse_complete)}\n"
-        output += f"📍 Ville : {clean_value(item.get('ville'))}\n"
-        output += f"📮 Code postal : {clean_value(item.get('code_postal'))}\n"
-        output += f"🌍 Pays : {clean_value(item.get('pays'))}\n"
-        output += f"🎂 Naissance : {clean_value(item.get('date_naissance'))}\n"
-        output += f"💻 Username : {clean_value(item.get('nom_utilisateur'))}\n"
-        output += f"🎯 Confiance : {clean_value(item.get('_confidence'))}%\n\n"
-
-    return output
-
-
-def build_response(results):
-    return {
-        "type": "text",
-        "content": format_results(results)
-    }
-
-
-def call_brixhub(payload):
-    try:
-        key = str(sorted(payload.items()))
-
-        if key in cache:
-            return cache[key]
-
-        headers = {
-            "X-API-Key": API_KEY,
-            "Content-Type": "application/json"
-        }
-
-        response = requests.post(
-            f"{BASE_URL}/search",
-            json=payload,
-            headers=headers,
-            timeout=20
-        )
-
-        data = response.json()
-        results = data.get("data", {}).get("results", [])
-
-        if not results:
-            result = {
-                "type": "text",
-                "content": "Aucun résultat trouvé"
-            }
-        else:
-            result = build_response(results)
-
-        cache[key] = result
-        return result
-
-    except Exception as e:
-        return {
-            "type": "text",
-            "content": f"Erreur API: {str(e)}"
-        }
 
 
 @app.route("/search", methods=["POST"])
@@ -123,32 +29,31 @@ def search():
             f"{BASE_URL}/search",
             json=data,
             headers=headers,
-            timeout=20
+            timeout=45
         )
 
         result = response.json()
-        history.append({"type": "site", "query": data, "result": result})
+
+        history.append({
+            "type": "site",
+            "query": data,
+            "total": result.get("meta", {}).get(
+                "total",
+                len(result.get("data", {}).get("results", []))
+            )
+        })
 
         return jsonify(result)
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/search")
-def api_search():
-    query = request.args.get("q")
-
-    if not query:
+    except requests.exceptions.Timeout:
         return jsonify({
-            "type": "text",
-            "content": "Aucune recherche"
-        }), 400
+            "error": "⏳ API Brixhub trop lente, réessaie dans quelques secondes."
+        }), 504
 
-    result = call_brixhub({"query": query})
-    history.append({"type": "simple", "query": query, "result": result})
-
-    return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 
 @app.route("/api/multisearch", methods=["POST"])
@@ -162,24 +67,52 @@ def api_multisearch():
 
     if not clean_data:
         return jsonify({
-            "type": "text",
-            "content": "Aucune donnée"
+            "type": "raw",
+            "results": [],
+            "total": 0
         }), 400
 
-    result = call_brixhub(clean_data)
-    history.append({"type": "multi", "query": clean_data, "result": result})
+    headers = {
+        "X-API-Key": API_KEY,
+        "Content-Type": "application/json"
+    }
 
-    return jsonify(result)
+    try:
+        response = requests.post(
+            f"{BASE_URL}/search",
+            json=clean_data,
+            headers=headers,
+            timeout=45
+        )
 
+        result = response.json()
 
-@app.route("/download")
-def download():
-    path = request.args.get("path")
+        results = result.get("data", {}).get("results", [])
+        meta = result.get("meta", {})
 
-    if not path or not os.path.exists(path):
-        return "Fichier introuvable", 404
+        history.append({
+            "type": "bot",
+            "query": clean_data,
+            "total": meta.get("total", len(results))
+        })
 
-    return send_file(path, as_attachment=True)
+        return jsonify({
+            "type": "raw",
+            "results": results,
+            "total": meta.get("total", len(results))
+        })
+
+    except requests.exceptions.Timeout:
+        return jsonify({
+            "type": "error",
+            "message": "⏳ API Brixhub trop lente, réessaie dans quelques secondes."
+        }), 504
+
+    except Exception as e:
+        return jsonify({
+            "type": "error",
+            "message": str(e)
+        }), 500
 
 
 @app.route("/history")
