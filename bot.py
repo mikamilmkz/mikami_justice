@@ -603,49 +603,15 @@ async def setup_panel():
         title="⚖️ MIKAMI JUSTICE",
         description=(
             "```ansi\n"
-            "MIKAMI CONTROL PANEL • PRIVATE SEARCH SYSTEM\n"
+            "MIKAMI OSINT • CONTROL PANEL\n"
             "```\n"
-            "> Bienvenue sur le nouveau panel de recherche.\n"
-            "> Choisissez un module ci-dessous selon les informations disponibles.\n\n"
-            "**Chaque résultat est envoyé en privé et visible uniquement par vous.**"
+            "🪪 **Identité** — Nom + prénom uniquement\n"
+            "🧬 **MultiSearch** — Plusieurs infos à croiser\n"
+            "🌫️ **Flexible** — Infos approximatives ou orthographe incertaine\n"
+            "📞 **Téléphone** — Recherche par numéro\n\n"
+            "`API Online` • `Résultats privés`"
         ),
         color=0x111318,
-    )
-
-    embed.add_field(
-        name="🪪 Identité",
-        value="Nom + prénom uniquement. Recherche précise et ciblée.",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="🧬 MultiSearch",
-        value=(
-            "Pour croiser plusieurs informations : nom, prénom, ville, email, username.\n"
-            "À privilégier si vous avez plus qu’un simple nom/prénom."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="🌫️ Flexible",
-        value=(
-            "Recherche large pour les informations incomplètes, approximatives "
-            "ou avec une orthographe incertaine."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="📞 Téléphone",
-        value="Recherche ciblée à partir d’un numéro.",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="📡 État du système",
-        value="`API Online` • `Bot connecté` • `Résultats privés`",
-        inline=False,
     )
 
     embed.set_thumbnail(url=LOGO_URL)
