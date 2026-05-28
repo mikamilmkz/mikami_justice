@@ -13,7 +13,6 @@ API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://brixhub.site/api/v1"
 history = []
 
-
 FIELD_ALIASES = {
     "prenom": ["prenom", "first_name", "firstname", "given_name"],
     "nom_famille": ["nom_famille", "nom", "last_name", "lastname", "surname", "family_name"],
@@ -63,6 +62,53 @@ def compact_text(value):
 
 def digits_only(value):
     return re.sub(r"\D+", "", str(value or ""))
+
+
+def clean_payload(data):
+    return {
+        key: value.strip() if isinstance(value, str) else value
+        for key, value in (data or {}).items()
+        if value not in ["", None]
+    }
+
+
+def split_full_name(value):
+    parts = normalize_text(value).split()
+
+    if len(parts) < 2:
+        return "", ""
+
+    prenom = parts[0]
+    nom_famille = " ".join(parts[1:])
+    return prenom, nom_famille
+
+
+def normalize_search_data(data):
+    """
+    Permet aussi les erreurs de saisie du type :
+    - prénom = "Julie Barret", nom vide
+    - nom = "Julie Barret", prénom vide
+    """
+    payload = clean_payload(data)
+
+    prenom = payload.get("prenom", "")
+    nom_famille = payload.get("nom_famille", "")
+
+    if prenom and not nom_famille:
+        guessed_prenom, guessed_nom = split_full_name(prenom)
+        if guessed_prenom and guessed_nom:
+            payload["prenom"] = guessed_prenom
+            payload["nom_famille"] = guessed_nom
+            payload["query"] = prenom
+
+    elif nom_famille and not prenom:
+        guessed_prenom, guessed_nom = split_full_name(nom_famille)
+        if guessed_prenom and guessed_nom:
+            payload["prenom"] = guessed_prenom
+            payload["nom_famille"] = guessed_nom
+            payload["query"] = nom_famille
+
+    return payload
 
 
 def get_item_value(item, field_name):
@@ -155,6 +201,7 @@ def full_name_score(query_data, item):
         for item_variant in item_variants:
             best = max(best, basic_match_score(query_variant, item_variant))
 
+    # Gros bonus si prénom + nom exacts, pour empêcher Julien/Barreteau de passer avant Julie/Barret.
     return best * 10
 
 
@@ -190,7 +237,7 @@ def sort_results(results, query_data):
     clean_query = {
         key: value
         for key, value in (query_data or {}).items()
-        if key != "flexible" and value not in ["", None]
+        if key not in ["flexible", "query"] and value not in ["", None]
     }
 
     if not clean_query:
@@ -203,13 +250,96 @@ def sort_results(results, query_data):
     )
 
 
-def replace_results(api_result, sorted_results):
-    if isinstance(api_result.get("data"), dict):
-        api_result["data"]["results"] = sorted_results
-    return api_result
+def result_identity_key(item):
+    parts = [
+        compact_text(get_item_value(item, "prenom")),
+        compact_text(get_item_value(item, "nom_famille")),
+        compact_text(get_item_value(item, "ville")),
+        compact_text(item.get("date_naissance") or ""),
+        digits_only(get_item_value(item, "telephone")),
+        compact_text(get_item_value(item, "email")),
+    ]
+
+    key = "|".join(part for part in parts if part)
+
+    if key:
+        return key
+
+    return compact_text(str(item))[:200]
 
 
-def call_brixhub(payload, timeout=45):
+def merge_results(result_groups):
+    merged = []
+    seen = set()
+
+    for results in result_groups:
+        for item in results:
+            key = result_identity_key(item)
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            merged.append(item)
+
+    return merged
+
+
+def build_search_payloads(clean_data):
+    """
+    Ancien comportement : 1 seul appel flexible.
+    Nouveau comportement : exact d'abord, puis flexible, puis recherche texte nom/prénom.
+    Ça aide quand Brixhub cache le bon résultat dans une recherche trop floue.
+    """
+    base = dict(clean_data)
+    base.pop("query", None)
+
+    payloads = []
+
+    def add(payload):
+        cleaned = clean_payload(payload)
+        marker = tuple(sorted(cleaned.items()))
+
+        if marker not in [tuple(sorted(existing.items())) for existing in payloads]:
+            payloads.append(cleaned)
+
+    identity_fields = bool(base.get("prenom") or base.get("nom_famille"))
+    has_city = bool(base.get("ville"))
+
+    # 1) Exact d'abord pour éviter Julie Barret -> Julien Barreteau.
+    if identity_fields:
+        exact_payload = dict(base)
+        exact_payload["flexible"] = False
+        add(exact_payload)
+
+    # 2) Recherche normale d'origine.
+    flexible_payload = dict(base)
+    flexible_payload["flexible"] = clean_data.get("flexible", True)
+    add(flexible_payload)
+
+    prenom = base.get("prenom", "")
+    nom_famille = base.get("nom_famille", "")
+
+    # 3) Recherche texte, très utile quand la recherche structurée nom/prénom est trop floue.
+    if prenom and nom_famille:
+        full_name_1 = f"{prenom} {nom_famille}".strip()
+        full_name_2 = f"{nom_famille} {prenom}".strip()
+
+        for full_name in [full_name_1, full_name_2]:
+            add({"query": full_name, "flexible": False})
+            add({"query": full_name, "flexible": True})
+
+        # Si la ville est renseignée, on teste aussi nom + ville, car tu as vu que ça fonctionne bien.
+        if has_city:
+            ville = base.get("ville")
+            add({"query": f"{full_name_1} {ville}", "flexible": False})
+            add({"query": f"{full_name_1} {ville}", "flexible": True})
+
+    # On limite pour ne pas faire trop attendre Discord/Render.
+    return payloads[:8]
+
+
+def call_brixhub(payload, timeout=35):
     if not API_KEY:
         return {"ok": False, "error": "API_KEY manquante côté serveur."}, 500
 
@@ -236,7 +366,7 @@ def call_brixhub(payload, timeout=45):
 
 @app.route("/search", methods=["POST"])
 def search():
-    data = request.json or {}
+    data = normalize_search_data(request.json or {})
 
     result, status = call_brixhub(data)
 
@@ -246,7 +376,9 @@ def search():
     api_result = result["data"]
     results, meta = safe_results(api_result)
     sorted_results = sort_results(results, data)
-    api_result = replace_results(api_result, sorted_results)
+
+    if isinstance(api_result.get("data"), dict):
+        api_result["data"]["results"] = sorted_results
 
     history.append({
         "type": "site",
@@ -264,70 +396,88 @@ def api_search():
     if not query:
         return jsonify({"type": "raw", "results": [], "total": 0}), 400
 
-    payload = {
-        "query": query,
-        "flexible": True,
-    }
+    payloads = [
+        {"query": query, "flexible": False},
+        {"query": query, "flexible": True},
+    ]
 
-    result, status = call_brixhub(payload)
+    result_groups = []
+    last_error = None
 
-    if not result.get("ok"):
-        return jsonify({
-            "type": "error",
-            "message": result.get("error", "Erreur inconnue"),
-        }), status
+    for payload in payloads:
+        result, status = call_brixhub(payload)
 
-    api_result = result["data"]
-    results, meta = safe_results(api_result)
-    sorted_results = sort_results(results, payload)
+        if not result.get("ok"):
+            last_error = result.get("error", "Erreur inconnue")
+            continue
+
+        api_result = result["data"]
+        results, _meta = safe_results(api_result)
+        result_groups.append(results)
+
+    if not result_groups:
+        return jsonify({"type": "error", "message": last_error or "Erreur inconnue"}), 502
+
+    merged_results = merge_results(result_groups)
+    sorted_results = sort_results(merged_results, {"query": query})
 
     history.append({
         "type": "bot-simple",
-        "query": payload,
-        "total": meta.get("total", len(sorted_results)),
+        "query": query,
+        "total": len(sorted_results),
     })
 
     return jsonify({
         "type": "raw",
         "results": sorted_results,
-        "total": meta.get("total", len(sorted_results)),
+        "total": len(sorted_results),
     })
 
 
 @app.route("/api/multisearch", methods=["POST"])
 def api_multisearch():
-    data = request.json or {}
-    clean_data = {
-        key: value
-        for key, value in data.items()
-        if value not in ["", None]
-    }
+    clean_data = normalize_search_data(request.json or {})
 
     if not clean_data:
         return jsonify({"type": "raw", "results": [], "total": 0}), 400
 
-    result, status = call_brixhub(clean_data)
+    payloads = build_search_payloads(clean_data)
+    result_groups = []
+    searched_payloads = []
+    last_error = None
 
-    if not result.get("ok"):
+    for payload in payloads:
+        result, status = call_brixhub(payload)
+        searched_payloads.append(payload)
+
+        if not result.get("ok"):
+            last_error = result.get("error", "Erreur inconnue")
+            continue
+
+        api_result = result["data"]
+        results, _meta = safe_results(api_result)
+        result_groups.append(results)
+
+    if not result_groups:
         return jsonify({
             "type": "error",
-            "message": result.get("error", "Erreur inconnue"),
-        }), status
+            "message": last_error or "Erreur inconnue",
+        }), 502
 
-    api_result = result["data"]
-    results, meta = safe_results(api_result)
-    sorted_results = sort_results(results, clean_data)
+    merged_results = merge_results(result_groups)
+    sorted_results = sort_results(merged_results, clean_data)
 
     history.append({
         "type": "bot",
         "query": clean_data,
-        "total": meta.get("total", len(sorted_results)),
+        "payloads": searched_payloads,
+        "total": len(sorted_results),
     })
 
     return jsonify({
         "type": "raw",
         "results": sorted_results,
-        "total": meta.get("total", len(sorted_results)),
+        "total": len(sorted_results),
     })
 
 
