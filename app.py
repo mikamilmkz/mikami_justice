@@ -1,6 +1,8 @@
 from difflib import SequenceMatcher
 import os
 import re
+import threading
+import time
 import unicodedata
 
 import requests
@@ -12,6 +14,16 @@ app = Flask(__name__)
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://brixhub.site/api/v1"
 history = []
+
+# Anti-429 : on limite les appels envoyés à Brixhub.
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))
+MIN_SECONDS_BETWEEN_BRIXHUB_CALLS = float(os.getenv("MIN_SECONDS_BETWEEN_BRIXHUB_CALLS", "0.9"))
+MAX_MULTISEARCH_CALLS = int(os.getenv("MAX_MULTISEARCH_CALLS", "3"))
+MAX_SIMPLE_SEARCH_CALLS = int(os.getenv("MAX_SIMPLE_SEARCH_CALLS", "2"))
+
+_brixhub_cache = {}
+_last_brixhub_call_at = 0.0
+_brixhub_lock = threading.Lock()
 
 FIELD_ALIASES = {
     "prenom": ["prenom", "first_name", "firstname", "given_name"],
@@ -250,6 +262,63 @@ def sort_results(results, query_data):
     )
 
 
+def exact_identity_match(query_data, item):
+    query_first = compact_text(query_data.get("prenom", ""))
+    query_last = compact_text(query_data.get("nom_famille", ""))
+
+    if query_first and query_last:
+        item_first = compact_text(get_item_value(item, "prenom"))
+        item_last = compact_text(get_item_value(item, "nom_famille"))
+
+        if item_first == query_first and item_last == query_last:
+            return True
+
+        full_variants = [
+            compact_text(f"{query_data.get('prenom', '')} {query_data.get('nom_famille', '')}"),
+            compact_text(f"{query_data.get('nom_famille', '')} {query_data.get('prenom', '')}"),
+        ]
+        item_variants = [
+            compact_text(f"{get_item_value(item, 'prenom')} {get_item_value(item, 'nom_famille')}"),
+            compact_text(f"{get_item_value(item, 'nom_famille')} {get_item_value(item, 'prenom')}"),
+            compact_text(item.get("nom_complet") or ""),
+            compact_text(item.get("full_name") or ""),
+            compact_text(item.get("name") or ""),
+        ]
+
+        if any(value and value in full_variants for value in item_variants):
+            return True
+
+    query_email = compact_text(query_data.get("email", ""))
+    if query_email and compact_text(get_item_value(item, "email")) == query_email:
+        return True
+
+    query_phone = digits_only(query_data.get("telephone", ""))
+    if query_phone and digits_only(get_item_value(item, "telephone")) == query_phone:
+        return True
+
+    return False
+
+
+def has_exact_identity_match(results, query_data):
+    return any(exact_identity_match(query_data, item) for item in results)
+
+
+def should_stop_search(results, query_data):
+    if not results:
+        return False
+
+    # Si on a trouvé l'identité exacte, inutile de spammer Brixhub avec d'autres variantes.
+    if has_exact_identity_match(results, query_data):
+        return True
+
+    # Pour les recherches sans prénom/nom, on garde l'ancien comportement : un bon retour suffit.
+    has_identity_name = bool(query_data.get("prenom") or query_data.get("nom_famille"))
+    if not has_identity_name:
+        return True
+
+    return False
+
+
 def result_identity_key(item):
     parts = [
         compact_text(get_item_value(item, "prenom")),
@@ -285,73 +354,120 @@ def merge_results(result_groups):
     return merged
 
 
+def add_unique_payload(payloads, payload):
+    cleaned = clean_payload(payload)
+    marker = tuple(sorted((key, str(value)) for key, value in cleaned.items()))
+
+    for existing in payloads:
+        existing_marker = tuple(sorted((key, str(value)) for key, value in existing.items()))
+        if marker == existing_marker:
+            return
+
+    payloads.append(cleaned)
+
+
 def build_search_payloads(clean_data):
     """
-    Ancien comportement : 1 seul appel flexible.
-    Nouveau comportement : exact d'abord, puis flexible, puis recherche texte nom/prénom.
-    Ça aide quand Brixhub cache le bon résultat dans une recherche trop floue.
+    Version anti-429 : peu d'appels, dans le bon ordre.
+    1) exact structuré
+    2) recherche texte exacte prénom + nom
+    3) flexible seulement en secours
     """
     base = dict(clean_data)
     base.pop("query", None)
 
     payloads = []
-
-    def add(payload):
-        cleaned = clean_payload(payload)
-        marker = tuple(sorted(cleaned.items()))
-
-        if marker not in [tuple(sorted(existing.items())) for existing in payloads]:
-            payloads.append(cleaned)
-
     identity_fields = bool(base.get("prenom") or base.get("nom_famille"))
-    has_city = bool(base.get("ville"))
-
-    # 1) Exact d'abord pour éviter Julie Barret -> Julien Barreteau.
-    if identity_fields:
-        exact_payload = dict(base)
-        exact_payload["flexible"] = False
-        add(exact_payload)
-
-    # 2) Recherche normale d'origine.
-    flexible_payload = dict(base)
-    flexible_payload["flexible"] = clean_data.get("flexible", True)
-    add(flexible_payload)
-
     prenom = base.get("prenom", "")
     nom_famille = base.get("nom_famille", "")
 
-    # 3) Recherche texte, très utile quand la recherche structurée nom/prénom est trop floue.
+    if identity_fields:
+        exact_payload = dict(base)
+        exact_payload["flexible"] = False
+        add_unique_payload(payloads, exact_payload)
+
     if prenom and nom_famille:
-        full_name_1 = f"{prenom} {nom_famille}".strip()
-        full_name_2 = f"{nom_famille} {prenom}".strip()
+        full_name = f"{prenom} {nom_famille}".strip()
+        add_unique_payload(payloads, {"query": full_name, "flexible": False})
 
-        for full_name in [full_name_1, full_name_2]:
-            add({"query": full_name, "flexible": False})
-            add({"query": full_name, "flexible": True})
+    flexible_payload = dict(base)
+    flexible_payload["flexible"] = True
+    add_unique_payload(payloads, flexible_payload)
 
-        # Si la ville est renseignée, on teste aussi nom + ville, car tu as vu que ça fonctionne bien.
-        if has_city:
-            ville = base.get("ville")
-            add({"query": f"{full_name_1} {ville}", "flexible": False})
-            add({"query": f"{full_name_1} {ville}", "flexible": True})
+    return payloads[:MAX_MULTISEARCH_CALLS]
 
-    # On limite pour ne pas faire trop attendre Discord/Render.
-    return payloads[:8]
+
+def cache_key_for_payload(payload):
+    cleaned = clean_payload(payload)
+    return tuple(sorted((key, str(value)) for key, value in cleaned.items()))
+
+
+def get_cached_brixhub_response(payload):
+    now = time.time()
+    cache_key = cache_key_for_payload(payload)
+    cached = _brixhub_cache.get(cache_key)
+
+    if not cached:
+        return None
+
+    saved_at, result = cached
+    if now - saved_at > CACHE_TTL_SECONDS:
+        _brixhub_cache.pop(cache_key, None)
+        return None
+
+    return result
+
+
+def save_cached_brixhub_response(payload, result):
+    _brixhub_cache[cache_key_for_payload(payload)] = (time.time(), result)
+
+    # Petit nettoyage pour éviter que la RAM grossisse sans fin.
+    if len(_brixhub_cache) > 300:
+        oldest_keys = sorted(
+            _brixhub_cache,
+            key=lambda key: _brixhub_cache[key][0],
+        )[:100]
+        for key in oldest_keys:
+            _brixhub_cache.pop(key, None)
 
 
 def call_brixhub(payload, timeout=35):
+    global _last_brixhub_call_at
+
     if not API_KEY:
         return {"ok": False, "error": "API_KEY manquante côté serveur."}, 500
 
+    cached = get_cached_brixhub_response(payload)
+    if cached is not None:
+        return {"ok": True, "data": cached, "cached": True}, 200
+
     try:
-        response = requests.post(
-            f"{BASE_URL}/search",
-            json=payload,
-            headers=get_headers(),
-            timeout=timeout,
-        )
+        with _brixhub_lock:
+            elapsed = time.time() - _last_brixhub_call_at
+            wait_time = MIN_SECONDS_BETWEEN_BRIXHUB_CALLS - elapsed
+            if wait_time > 0:
+                time.sleep(wait_time)
+
+            response = requests.post(
+                f"{BASE_URL}/search",
+                json=payload,
+                headers=get_headers(),
+                timeout=timeout,
+            )
+            _last_brixhub_call_at = time.time()
+
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            wait_message = f" Attends environ {retry_after} secondes." if retry_after else " Réessaie dans quelques instants."
+            return {
+                "ok": False,
+                "error": "Brixhub limite les requêtes pour le moment." + wait_message,
+                "rate_limited": True,
+            }, 429
+
         response.raise_for_status()
         result = response.json()
+        save_cached_brixhub_response(payload, result)
         return {"ok": True, "data": result}, 200
 
     except requests.exceptions.Timeout:
@@ -362,6 +478,12 @@ def call_brixhub(payload, timeout=35):
 
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
+
+
+def append_history(entry):
+    history.append(entry)
+    if len(history) > 100:
+        del history[: len(history) - 100]
 
 
 @app.route("/search", methods=["POST"])
@@ -380,10 +502,11 @@ def search():
     if isinstance(api_result.get("data"), dict):
         api_result["data"]["results"] = sorted_results
 
-    history.append({
+    append_history({
         "type": "site",
         "query": data,
         "total": meta.get("total", len(sorted_results)),
+        "cached": bool(result.get("cached")),
     })
 
     return jsonify(api_result)
@@ -399,31 +522,41 @@ def api_search():
     payloads = [
         {"query": query, "flexible": False},
         {"query": query, "flexible": True},
-    ]
+    ][:MAX_SIMPLE_SEARCH_CALLS]
 
     result_groups = []
+    searched_payloads = []
     last_error = None
+    last_status = 502
 
     for payload in payloads:
         result, status = call_brixhub(payload)
+        searched_payloads.append({"payload": payload, "status": status, "cached": bool(result.get("cached"))})
 
         if not result.get("ok"):
             last_error = result.get("error", "Erreur inconnue")
+            last_status = status
+            if result.get("rate_limited"):
+                break
             continue
 
         api_result = result["data"]
         results, _meta = safe_results(api_result)
         result_groups.append(results)
 
+        if results:
+            break
+
     if not result_groups:
-        return jsonify({"type": "error", "message": last_error or "Erreur inconnue"}), 502
+        return jsonify({"type": "error", "message": last_error or "Erreur inconnue"}), last_status
 
     merged_results = merge_results(result_groups)
     sorted_results = sort_results(merged_results, {"query": query})
 
-    history.append({
+    append_history({
         "type": "bot-simple",
         "query": query,
+        "payloads": searched_payloads,
         "total": len(sorted_results),
     })
 
@@ -445,29 +578,36 @@ def api_multisearch():
     result_groups = []
     searched_payloads = []
     last_error = None
+    last_status = 502
 
     for payload in payloads:
         result, status = call_brixhub(payload)
-        searched_payloads.append(payload)
+        searched_payloads.append({"payload": payload, "status": status, "cached": bool(result.get("cached"))})
 
         if not result.get("ok"):
             last_error = result.get("error", "Erreur inconnue")
+            last_status = status
+            if result.get("rate_limited"):
+                break
             continue
 
         api_result = result["data"]
         results, _meta = safe_results(api_result)
         result_groups.append(results)
 
+        if should_stop_search(results, clean_data):
+            break
+
     if not result_groups:
         return jsonify({
             "type": "error",
             "message": last_error or "Erreur inconnue",
-        }), 502
+        }), last_status
 
     merged_results = merge_results(result_groups)
     sorted_results = sort_results(merged_results, clean_data)
 
-    history.append({
+    append_history({
         "type": "bot",
         "query": clean_data,
         "payloads": searched_payloads,
