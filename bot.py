@@ -435,6 +435,76 @@ class MultiModal(Modal, title="MultiSearch"):
             )
 
 
+class MultiFlexibleModal(Modal, title="MultiSearch Flexible"):
+    nom = TextInput(
+        label="Nom",
+        required=False,
+        placeholder="Nom de famille",
+    )
+
+    prenom = TextInput(
+        label="Prénom",
+        required=False,
+    )
+
+    ville = TextInput(
+        label="Ville",
+        required=False,
+    )
+
+    email = TextInput(
+        label="Email",
+        required=False,
+    )
+
+    username = TextInput(
+        label="Username",
+        required=False,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(
+            thinking=True,
+            ephemeral=True,
+        )
+
+        payload = {
+            "nom_famille": self.nom.value.strip(),
+            "prenom": self.prenom.value.strip(),
+            "ville": self.ville.value.strip(),
+            "email": self.email.value.strip(),
+            "nom_utilisateur": self.username.value.strip(),
+            "flexible": True,
+            "search_mode": "flexible_only",
+        }
+
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if value not in ["", None]
+        }
+
+        try:
+            data = await call_api(payload)
+            total = await send_result(
+                interaction,
+                data,
+                "MultiSearch Flexible",
+                0xFEE75C,
+            )
+            await log_search(
+                interaction.user,
+                "MultiSearch Flexible",
+                total,
+            )
+
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Erreur : {safe_text(e)}",
+                ephemeral=True,
+            )
+
+
 class PhoneModal(Modal, title="Recherche Téléphone"):
     telephone = TextInput(
         label="Téléphone",
@@ -494,6 +564,14 @@ class Panel(View):
         await interaction.response.send_modal(MultiModal())
 
     @discord.ui.button(
+        label="🔎 Flexible",
+        style=discord.ButtonStyle.secondary,
+        custom_id="btn_multi_flexible",
+    )
+    async def multi_flexible(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(MultiFlexibleModal())
+
+    @discord.ui.button(
         label=" Téléphone",
         style=discord.ButtonStyle.success,
         custom_id="btn_phone",
@@ -523,7 +601,8 @@ async def setup_panel():
         description=(
             "**Panel de recherche privé.**\n\n"
             " **Identité** — recherche ciblée par nom + prénom.\n"
-            "⚡ **MultiSearch** — recherche avancée avec plusieurs champs.\n"
+            "⚡ **MultiSearch** — recherche intelligente exacte puis flexible.\n"
+            "🔎 **Flexible** — même formulaire que MultiSearch, mais en recherche large.\n"
             " **Téléphone** — recherche ciblée par numéro.\n\n"
             " Les résultats sont visibles uniquement par l’utilisateur."
         ),
