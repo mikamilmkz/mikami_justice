@@ -17,6 +17,9 @@ RESULTS_CHANNEL_ID = 1507891868489482431
 BASE_URL = "https://mikami-justice.onrender.com"
 API_MULTI = f"{BASE_URL}/api/multisearch"
 LOGO_URL = f"{BASE_URL}/static/logo.png"
+BANNER_URL = f"{BASE_URL}/static/banner.png"
+BANNER_PATH = os.getenv("BANNER_PATH", "static/banner.png")
+BANNER_ATTACHMENT_NAME = "mikami_banner.png"
 
 RESULTS_PER_PAGE = 2
 
@@ -548,7 +551,7 @@ class Panel(View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label=" Identité",
+        label="🪪 Identité",
         style=discord.ButtonStyle.primary,
         custom_id="btn_identity",
     )
@@ -556,7 +559,7 @@ class Panel(View):
         await interaction.response.send_modal(NameModal())
 
     @discord.ui.button(
-        label="⚡ MultiSearch",
+        label="🧬 MultiSearch",
         style=discord.ButtonStyle.danger,
         custom_id="btn_multi",
     )
@@ -564,7 +567,7 @@ class Panel(View):
         await interaction.response.send_modal(MultiModal())
 
     @discord.ui.button(
-        label="🔎 Flexible",
+        label="🌫️ Flexible",
         style=discord.ButtonStyle.secondary,
         custom_id="btn_multi_flexible",
     )
@@ -572,7 +575,7 @@ class Panel(View):
         await interaction.response.send_modal(MultiFlexibleModal())
 
     @discord.ui.button(
-        label=" Téléphone",
+        label="📞 Téléphone",
         style=discord.ButtonStyle.success,
         custom_id="btn_phone",
     )
@@ -597,41 +600,84 @@ async def setup_panel():
         pass
 
     embed = discord.Embed(
-        title="⚖️ MIKAMI OSINT",
+        title="⚖️ MIKAMI JUSTICE",
         description=(
-            "**Panel de recherche privé.**\n\n"
-            " **Identité** — recherche ciblée par nom + prénom.\n"
-            "⚡ **MultiSearch** — recherche intelligente exacte puis flexible.\n"
-            "🔎 **Flexible** — même formulaire que MultiSearch, mais en recherche large.\n"
-            " **Téléphone** — recherche ciblée par numéro.\n\n"
-            " Les résultats sont visibles uniquement par l’utilisateur."
+            "```ansi\n"
+            "MIKAMI CONTROL PANEL • PRIVATE SEARCH SYSTEM\n"
+            "```\n"
+            "> Bienvenue sur le nouveau panel de recherche.\n"
+            "> Choisissez un module ci-dessous selon les informations disponibles.\n\n"
+            "**Chaque résultat est envoyé en privé et visible uniquement par vous.**"
         ),
-        color=0x2B2D31,
+        color=0x111318,
     )
 
     embed.add_field(
-        name=" API",
-        value="Online",
-        inline=True,
+        name="🪪 Identité",
+        value="Nom + prénom uniquement. Recherche précise et ciblée.",
+        inline=False,
     )
 
     embed.add_field(
-        name=" Bot",
-        value="Railway Connected",
-        inline=True,
+        name="🧬 MultiSearch",
+        value=(
+            "Pour croiser plusieurs informations : nom, prénom, ville, email, username.\n"
+            "À privilégier si vous avez plus qu’un simple nom/prénom."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🌫️ Flexible",
+        value=(
+            "Recherche large pour les informations incomplètes, approximatives "
+            "ou avec une orthographe incertaine."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📞 Téléphone",
+        value="Recherche ciblée à partir d’un numéro.",
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📡 État du système",
+        value="`API Online` • `Bot connecté` • `Résultats privés`",
+        inline=False,
     )
 
     embed.set_thumbnail(url=LOGO_URL)
 
+    banner_file = None
+    if os.path.exists(BANNER_PATH):
+        embed.set_image(url=f"attachment://{BANNER_ATTACHMENT_NAME}")
+        banner_file = discord.File(
+            BANNER_PATH,
+            filename=BANNER_ATTACHMENT_NAME,
+        )
+    else:
+        embed.set_image(url=BANNER_URL)
+
+    embed.timestamp = discord.utils.utcnow()
+
     embed.set_footer(
-        text="MIKAMI OSINT • Analyse. Comprends. Agis.",
+        text="MIKAMI JUSTICE • Analyse. Comprends. Agis.",
         icon_url=LOGO_URL,
     )
 
-    await channel.send(
-        embed=embed,
-        view=Panel(),
-    )
+    if banner_file:
+        await channel.send(
+            embed=embed,
+            view=Panel(),
+            file=banner_file,
+        )
+    else:
+        await channel.send(
+            embed=embed,
+            view=Panel(),
+        )
 
 
 @bot.event
