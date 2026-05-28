@@ -34,6 +34,10 @@ FIELD_ALIASES = {
     "nom_utilisateur": ["nom_utilisateur", "username", "user", "pseudo"],
 }
 
+# Champs utilisés uniquement par notre bot/API.
+# Ils ne doivent jamais être envoyés à Brixhub.
+INTERNAL_PAYLOAD_KEYS = {"search_mode", "force_flexible", "mode"}
+
 
 @app.route("/")
 def index():
@@ -82,6 +86,25 @@ def clean_payload(data):
         for key, value in (data or {}).items()
         if value not in ["", None]
     }
+
+
+def clean_brixhub_payload(data):
+    """Retire les champs internes avant l'appel à Brixhub."""
+    return {
+        key: value
+        for key, value in clean_payload(data).items()
+        if key not in INTERNAL_PAYLOAD_KEYS
+    }
+
+
+def wants_flexible_only(data):
+    mode = str((data or {}).get("search_mode") or (data or {}).get("mode") or "").lower().strip()
+    force_flexible = str((data or {}).get("force_flexible") or "").lower().strip()
+
+    return (
+        mode in ["flexible", "flexible_only", "multi_flexible"]
+        or force_flexible in ["1", "true", "yes", "oui"]
+    )
 
 
 def split_full_name(value):
@@ -368,15 +391,26 @@ def add_unique_payload(payloads, payload):
 
 def build_search_payloads(clean_data):
     """
-    Version anti-429 : peu d'appels, dans le bon ordre.
+    Mode normal anti-429 :
     1) exact structuré
     2) recherche texte exacte prénom + nom
     3) flexible seulement en secours
+
+    Mode flexible_only :
+    - un seul appel Brixhub en flexible=True.
+    - utile pour le nouveau modal Flexible, sans multiplier les requêtes.
     """
-    base = dict(clean_data)
+    base = clean_brixhub_payload(clean_data)
     base.pop("query", None)
 
     payloads = []
+
+    if wants_flexible_only(clean_data):
+        flexible_payload = dict(base)
+        flexible_payload["flexible"] = True
+        add_unique_payload(payloads, flexible_payload)
+        return payloads[:1]
+
     identity_fields = bool(base.get("prenom") or base.get("nom_famille"))
     prenom = base.get("prenom", "")
     nom_famille = base.get("nom_famille", "")
@@ -433,6 +467,8 @@ def save_cached_brixhub_response(payload, result):
 
 def call_brixhub(payload, timeout=35):
     global _last_brixhub_call_at
+
+    payload = clean_brixhub_payload(payload)
 
     if not API_KEY:
         return {"ok": False, "error": "API_KEY manquante côté serveur."}, 500
