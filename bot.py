@@ -395,6 +395,45 @@ async def log_admin_search(user, search_type, payload, total, elapsed_ms, data=N
         pass
 
 
+async def log_public_search(user, search_type, total, data=None, error=None):
+    channel = bot.get_channel(RESULTS_CHANNEL_ID)
+
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(RESULTS_CHANNEL_ID)
+        except Exception:
+            return
+
+    if error or (isinstance(data, dict) and data.get("type") == "error"):
+        status = "Erreur"
+    elif total and total > 0:
+        status = "Résultat trouvé"
+    else:
+        status = "Aucun résultat"
+
+    embed = discord.Embed(
+        title=" Nouvelle recherche",
+        description=(
+            f" Utilisateur : {user.mention}\n"
+            f" Type : **{search_type}**\n"
+            f" Statut : **{status}**\n"
+            f" Résultats : **{total}**\n"
+            f" Données : privées"
+        ),
+        color=0x2B2D31,
+    )
+
+    embed.set_footer(
+        text="MIKAMI OSINT • Logs publics",
+        icon_url=LOGO_URL,
+    )
+
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
+
 async def send_result(interaction, data, title, color):
     if not isinstance(data, dict):
         await interaction.followup.send(
@@ -479,6 +518,13 @@ async def execute_search(interaction, payload, title, color, search_type):
             data=data,
         )
 
+        await log_public_search(
+            interaction.user,
+            search_type,
+            total,
+            data=data,
+        )
+
     except Exception as e:
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -493,6 +539,13 @@ async def execute_search(interaction, payload, title, color, search_type):
             payload,
             0,
             elapsed_ms,
+            error=e,
+        )
+
+        await log_public_search(
+            interaction.user,
+            search_type,
+            0,
             error=e,
         )
 
