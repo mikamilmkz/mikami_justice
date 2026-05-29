@@ -14,6 +14,16 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 SEARCH_CHANNEL_ID = 1507891823031619746
 RESULTS_CHANNEL_ID = 1507891868489482431
 
+
+def env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+ADMIN_LOG_CHANNEL_ID = 1509730558685483108
+
 BASE_URL = "https://mikami-justice.onrender.com"
 API_MULTI = f"{BASE_URL}/api/multisearch"
 LOGO_URL = f"{BASE_URL}/static/logo.png"
@@ -236,27 +246,148 @@ class ResultPages(View):
         )
 
 
-async def log_search(user, search_type, total):
-    channel = bot.get_channel(RESULTS_CHANNEL_ID)
+async def get_admin_log_channel():
+    channel = bot.get_channel(ADMIN_LOG_CHANNEL_ID)
+
+    if channel:
+        return channel
+
+    try:
+        return await bot.fetch_channel(ADMIN_LOG_CHANNEL_ID)
+    except Exception:
+        return None
+
+
+def payload_fields(payload):
+    labels = {
+        "nom_famille": "nom",
+        "nom": "nom",
+        "prenom": "prénom",
+        "ville": "ville",
+        "email": "email",
+        "telephone": "téléphone",
+        "mobile": "téléphone",
+        "tel": "téléphone",
+        "phone": "téléphone",
+        "nom_utilisateur": "username",
+        "username": "username",
+        "date_naissance": "date de naissance",
+        "code_postal": "code postal",
+        "pays": "pays",
+    }
+
+    ignored = {"flexible", "search_mode"}
+    fields = []
+
+    for key, value in payload.items():
+        if key in ignored or value in [None, ""]:
+            continue
+
+        fields.append(labels.get(key, key))
+
+    return ", ".join(dict.fromkeys(fields)) or "aucun champ"
+
+
+def search_mode_label(payload):
+    mode = payload.get("search_mode")
+
+    if mode == "flexible_only":
+        return "Flexible direct"
+
+    if mode == "phone_exact":
+        return "Exact téléphone"
+
+    if payload.get("flexible") is False:
+        return "Exact"
+
+    return "Intelligent"
+
+
+def outcome_label(data, total, error=None):
+    if error:
+        return "❌ Erreur"
+
+    if not isinstance(data, dict):
+        return "⚠️ Réponse invalide"
+
+    if data.get("type") == "error":
+        return "❌ Erreur API"
+
+    if data.get("type") == "raw":
+        if total and total > 0:
+            return "✅ Résultat trouvé"
+
+        return "🔎 Aucun résultat"
+
+    return "⚠️ Réponse inattendue"
+
+
+async def log_admin_search(user, search_type, payload, total, elapsed_ms, data=None, error=None):
+    channel = await get_admin_log_channel()
 
     if not channel:
         return
 
     embed = discord.Embed(
-        title=" Nouvelle recherche",
-        description=(
-            f" Utilisateur : {user.mention}\n"
-            f" Type : **{search_type}**\n"
-            f" Résultats : **{total}**\n"
-            f" Données : privées"
-        ),
+        title="📊 Log recherche",
         color=0x2B2D31,
     )
 
+    embed.add_field(
+        name="Utilisateur",
+        value=f"{user.mention}\n`{user}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Mode",
+        value=f"**{search_type}**\n`{search_mode_label(payload)}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Statut",
+        value=outcome_label(data, total, error),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Champs utilisés",
+        value=f"`{payload_fields(payload)}`",
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Résultats",
+        value=f"`{total}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Temps API",
+        value=f"`{elapsed_ms} ms`",
+        inline=True,
+    )
+
+    if error:
+        embed.add_field(
+            name="Erreur",
+            value=f"```txt\n{safe_text(error, 500)}\n```",
+            inline=False,
+        )
+    elif isinstance(data, dict) and data.get("type") == "error":
+        embed.add_field(
+            name="Erreur API",
+            value=f"```txt\n{safe_text(data.get('message'), 500)}\n```",
+            inline=False,
+        )
+
     embed.set_footer(
-        text="MIKAMI OSINT • Logs",
+        text="MIKAMI OSINT • Logs admin • Données sensibles masquées",
         icon_url=LOGO_URL,
     )
+
+    embed.timestamp = discord.utils.utcnow()
 
     try:
         await channel.send(embed=embed)
@@ -325,6 +456,47 @@ async def send_result(interaction, data, title, color):
     return 0
 
 
+async def execute_search(interaction, payload, title, color, search_type):
+    start_time = time.perf_counter()
+
+    try:
+        data = await call_api(payload)
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+
+        total = await send_result(
+            interaction,
+            data,
+            title,
+            color,
+        )
+
+        await log_admin_search(
+            interaction.user,
+            search_type,
+            payload,
+            total,
+            elapsed_ms,
+            data=data,
+        )
+
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+
+        await interaction.followup.send(
+            f"❌ Erreur : {safe_text(e)}",
+            ephemeral=True,
+        )
+
+        await log_admin_search(
+            interaction.user,
+            search_type,
+            payload,
+            0,
+            elapsed_ms,
+            error=e,
+        )
+
+
 class NameModal(Modal, title="Recherche Identité"):
     nom = TextInput(
         label="Nom",
@@ -348,25 +520,13 @@ class NameModal(Modal, title="Recherche Identité"):
             "flexible": True,
         }
 
-        try:
-            data = await call_api(payload)
-            total = await send_result(
-                interaction,
-                data,
-                "Recherche Identité",
-                0x5865F2,
-            )
-            await log_search(
-                interaction.user,
-                "Identité",
-                total,
-            )
-
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Erreur : {safe_text(e)}",
-                ephemeral=True,
-            )
+        await execute_search(
+            interaction,
+            payload,
+            "Recherche Identité",
+            0x5865F2,
+            "Identité",
+        )
 
 
 class MultiModal(Modal, title="MultiSearch"):
@@ -417,25 +577,13 @@ class MultiModal(Modal, title="MultiSearch"):
             if value not in ["", None]
         }
 
-        try:
-            data = await call_api(payload)
-            total = await send_result(
-                interaction,
-                data,
-                "MultiSearch",
-                0xED4245,
-            )
-            await log_search(
-                interaction.user,
-                "MultiSearch",
-                total,
-            )
-
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Erreur : {safe_text(e)}",
-                ephemeral=True,
-            )
+        await execute_search(
+            interaction,
+            payload,
+            "MultiSearch",
+            0xED4245,
+            "MultiSearch",
+        )
 
 
 class MultiFlexibleModal(Modal, title="MultiSearch Flexible"):
@@ -487,25 +635,13 @@ class MultiFlexibleModal(Modal, title="MultiSearch Flexible"):
             if value not in ["", None]
         }
 
-        try:
-            data = await call_api(payload)
-            total = await send_result(
-                interaction,
-                data,
-                "MultiSearch Flexible",
-                0xFEE75C,
-            )
-            await log_search(
-                interaction.user,
-                "MultiSearch Flexible",
-                total,
-            )
-
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Erreur : {safe_text(e)}",
-                ephemeral=True,
-            )
+        await execute_search(
+            interaction,
+            payload,
+            "MultiSearch Flexible",
+            0xFEE75C,
+            "Flexible",
+        )
 
 
 class PhoneModal(Modal, title="Recherche Téléphone"):
@@ -526,25 +662,13 @@ class PhoneModal(Modal, title="Recherche Téléphone"):
             "search_mode": "phone_exact",
         }
 
-        try:
-            data = await call_api(payload)
-            total = await send_result(
-                interaction,
-                data,
-                "Recherche Téléphone",
-                0x57F287,
-            )
-            await log_search(
-                interaction.user,
-                "Téléphone",
-                total,
-            )
-
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Erreur : {safe_text(e)}",
-                ephemeral=True,
-            )
+        await execute_search(
+            interaction,
+            payload,
+            "Recherche Téléphone",
+            0x57F287,
+            "Téléphone",
+        )
 
 
 class Panel(View):
