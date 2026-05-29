@@ -20,6 +20,7 @@ CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))
 MIN_SECONDS_BETWEEN_BRIXHUB_CALLS = float(os.getenv("MIN_SECONDS_BETWEEN_BRIXHUB_CALLS", "0.9"))
 MAX_MULTISEARCH_CALLS = int(os.getenv("MAX_MULTISEARCH_CALLS", "3"))
 MAX_SIMPLE_SEARCH_CALLS = int(os.getenv("MAX_SIMPLE_SEARCH_CALLS", "2"))
+MAX_PHONE_SEARCH_CALLS = int(os.getenv("MAX_PHONE_SEARCH_CALLS", "5"))
 
 _brixhub_cache = {}
 _last_brixhub_call_at = 0.0
@@ -78,6 +79,114 @@ def compact_text(value):
 
 def digits_only(value):
     return re.sub(r"\D+", "", str(value or ""))
+
+
+def flatten_phone_values(value):
+    if value in [None, "", "N/A"]:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        values = []
+        for entry in value:
+            values.extend(flatten_phone_values(entry))
+        return values
+
+    text = str(value).strip()
+    if not text:
+        return []
+
+    # Si plusieurs numéros sont dans le même champ, on les sépare sans casser les formats français.
+    pieces = re.split(r"[,;/|\n]+", text)
+    return [piece.strip() for piece in pieces if piece.strip()] or [text]
+
+
+def french_phone_digit_variants(value):
+    """Retourne les variantes exactes d'un numéro français sous forme de chiffres."""
+    variants = []
+
+    for raw_value in flatten_phone_values(value):
+        digits = digits_only(raw_value)
+
+        if not digits:
+            continue
+
+        candidates = [digits]
+
+        # 00336XXXXXXXX -> 336XXXXXXXX
+        if digits.startswith("00") and len(digits) > 4:
+            candidates.append(digits[2:])
+
+        for candidate in list(candidates):
+            # 0612345678 -> 33612345678 / 0033612345678 / 612345678
+            if candidate.startswith("0") and len(candidate) == 10:
+                national = candidate[1:]
+                candidates.extend([
+                    "33" + national,
+                    "0033" + national,
+                    national,
+                ])
+
+            # 33612345678 -> 0612345678 / 0033612345678 / 612345678
+            if candidate.startswith("33") and len(candidate) == 11:
+                national = candidate[2:]
+                candidates.extend([
+                    "0" + national,
+                    "0033" + national,
+                    national,
+                ])
+
+            # 612345678 -> 0612345678 / 33612345678 / 0033612345678
+            if len(candidate) == 9 and candidate[0] in "123456789":
+                candidates.extend([
+                    "0" + candidate,
+                    "33" + candidate,
+                    "0033" + candidate,
+                ])
+
+        for candidate in candidates:
+            if candidate and candidate not in variants:
+                variants.append(candidate)
+
+    return variants
+
+
+def french_phone_search_variants(value):
+    """Variantes envoyées à Brixhub, sans recherche flexible."""
+    variants = []
+
+    def add(value_to_add):
+        if value_to_add and value_to_add not in variants:
+            variants.append(value_to_add)
+
+    for raw_value in flatten_phone_values(value):
+        raw_value = raw_value.strip()
+        digits = digits_only(raw_value)
+        digit_variants = french_phone_digit_variants(raw_value)
+
+        add(raw_value)
+        add(digits)
+
+        local = next((v for v in digit_variants if v.startswith("0") and len(v) == 10), "")
+        international = next((v for v in digit_variants if v.startswith("33") and len(v) == 11), "")
+        international_00 = next((v for v in digit_variants if v.startswith("0033") and len(v) == 13), "")
+
+        add(local)
+        if international:
+            add("+" + international)
+            add(international)
+        add(international_00)
+
+    return variants
+
+
+def phones_are_equivalent(query_value, item_value):
+    query_variants = set(french_phone_digit_variants(query_value))
+    item_variants = set(french_phone_digit_variants(item_value))
+
+    if not query_variants or not item_variants:
+        return False
+
+    return bool(query_variants & item_variants)
 
 
 def clean_payload(data):
@@ -184,20 +293,11 @@ def basic_match_score(query_value, item_value):
 
 
 def phone_match_score(query_value, item_value):
-    query = digits_only(query_value)
-    candidate = digits_only(item_value)
-
-    if not query or not candidate:
-        return 0
-
-    if query == candidate:
+    # Téléphone = précision stricte : exact ou variante française équivalente, sinon 0.
+    if phones_are_equivalent(query_value, item_value):
         return 100
 
-    if candidate.endswith(query) or query.endswith(candidate):
-        return 85
-
-    ratio = SequenceMatcher(None, query, candidate).ratio()
-    return int(ratio * 60)
+    return 0
 
 
 def get_confidence(item):
@@ -285,6 +385,19 @@ def sort_results(results, query_data):
     )
 
 
+def filter_phone_exact_results(results, query_data):
+    phone = (query_data or {}).get("telephone")
+
+    if not phone:
+        return results
+
+    return [
+        item
+        for item in results
+        if phones_are_equivalent(phone, get_item_value(item, "telephone"))
+    ]
+
+
 def exact_identity_match(query_data, item):
     query_first = compact_text(query_data.get("prenom", ""))
     query_last = compact_text(query_data.get("nom_famille", ""))
@@ -315,8 +428,8 @@ def exact_identity_match(query_data, item):
     if query_email and compact_text(get_item_value(item, "email")) == query_email:
         return True
 
-    query_phone = digits_only(query_data.get("telephone", ""))
-    if query_phone and digits_only(get_item_value(item, "telephone")) == query_phone:
+    query_phone = query_data.get("telephone", "")
+    if query_phone and phones_are_equivalent(query_phone, get_item_value(item, "telephone")):
         return True
 
     return False
@@ -329,6 +442,10 @@ def has_exact_identity_match(results, query_data):
 def should_stop_search(results, query_data):
     if not results:
         return False
+
+    # Téléphone : on ne s'arrête que si le numéro exact ou une variante FR équivalente est trouvé.
+    if query_data.get("telephone"):
+        return has_exact_identity_match(results, query_data)
 
     # Si on a trouvé l'identité exacte, inutile de spammer Brixhub avec d'autres variantes.
     if has_exact_identity_match(results, query_data):
@@ -389,6 +506,26 @@ def add_unique_payload(payloads, payload):
     payloads.append(cleaned)
 
 
+def build_phone_payloads(base):
+    phone = base.get("telephone")
+    payloads = []
+
+    if not phone:
+        return payloads
+
+    base_without_phone = dict(base)
+    base_without_phone.pop("telephone", None)
+    base_without_phone.pop("query", None)
+
+    for variant in french_phone_search_variants(phone):
+        payload = dict(base_without_phone)
+        payload["telephone"] = variant
+        payload["flexible"] = False
+        add_unique_payload(payloads, payload)
+
+    return payloads[:MAX_PHONE_SEARCH_CALLS]
+
+
 def build_search_payloads(clean_data):
     """
     Mode normal anti-429 :
@@ -402,6 +539,10 @@ def build_search_payloads(clean_data):
     """
     base = clean_brixhub_payload(clean_data)
     base.pop("query", None)
+
+    # Téléphone : jamais de flexible. On teste uniquement les formats exacts FR.
+    if base.get("telephone"):
+        return build_phone_payloads(base)
 
     payloads = []
 
@@ -533,7 +674,8 @@ def search():
 
     api_result = result["data"]
     results, meta = safe_results(api_result)
-    sorted_results = sort_results(results, data)
+    exact_results = filter_phone_exact_results(results, data)
+    sorted_results = sort_results(exact_results, data)
 
     if isinstance(api_result.get("data"), dict):
         api_result["data"]["results"] = sorted_results
@@ -641,7 +783,8 @@ def api_multisearch():
         }), last_status
 
     merged_results = merge_results(result_groups)
-    sorted_results = sort_results(merged_results, clean_data)
+    exact_results = filter_phone_exact_results(merged_results, clean_data)
+    sorted_results = sort_results(exact_results, clean_data)
 
     append_history({
         "type": "bot",
