@@ -23,6 +23,12 @@ MAX_SIMPLE_SEARCH_CALLS = int(os.getenv("MAX_SIMPLE_SEARCH_CALLS", "2"))
 MAX_PHONE_SEARCH_CALLS = int(os.getenv("MAX_PHONE_SEARCH_CALLS", "5"))
 MAX_EMAIL_SEARCH_CALLS = int(os.getenv("MAX_EMAIL_SEARCH_CALLS", "2"))
 
+# Pagination Brixhub : l'API renvoie page 1 par défaut.
+# On récupère plusieurs pages, mais avec une limite pour éviter les 429.
+BRIXHUB_PER_PAGE = int(os.getenv("BRIXHUB_PER_PAGE", "10"))
+MAX_BRIXHUB_PAGES = int(os.getenv("MAX_BRIXHUB_PAGES", "10"))
+USER_AGENT = os.getenv("BRIXHUB_USER_AGENT", "MikamiBot/1.0")
+
 _brixhub_cache = {}
 _last_brixhub_call_at = 0.0
 _brixhub_lock = threading.Lock()
@@ -50,6 +56,7 @@ def get_headers():
     return {
         "X-API-Key": API_KEY,
         "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
     }
 
 
@@ -759,6 +766,92 @@ def call_brixhub(payload, timeout=35):
         return {"ok": False, "error": str(e)}, 500
 
 
+
+def safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def prepare_paged_payload(payload, page=1):
+    paged_payload = clean_brixhub_payload(payload)
+    paged_payload["page"] = max(1, safe_int(page, 1))
+
+    per_page = safe_int(paged_payload.get("per_page"), 0)
+    if per_page <= 0:
+        per_page = BRIXHUB_PER_PAGE
+
+    # La doc Brixhub indique 100 max selon le plan. On garde une limite dure.
+    paged_payload["per_page"] = max(1, min(per_page, 100))
+    return paged_payload
+
+
+def fetch_brixhub_pages(payload):
+    """Récupère plusieurs pages Brixhub pour un même payload.
+
+    Avant : on ne lisait que la page 1.
+    Maintenant : on lit meta.pages puis on continue jusqu'à MAX_BRIXHUB_PAGES.
+    Si le plan API refuse la pagination, on garde quand même les résultats page 1.
+    """
+    all_results = []
+    page_logs = []
+    last_error = None
+    last_status = 502
+
+    first_payload = prepare_paged_payload(payload, page=payload.get("page", 1))
+    first_result, first_status = call_brixhub(first_payload)
+    page_logs.append({
+        "payload": first_payload,
+        "status": first_status,
+        "cached": bool(first_result.get("cached")),
+    })
+
+    if not first_result.get("ok"):
+        return all_results, page_logs, last_error or first_result.get("error", "Erreur inconnue"), first_status
+
+    api_result = first_result["data"]
+    results, meta = safe_results(api_result)
+    all_results.extend(results)
+
+    meta_pages = safe_int(meta.get("pages"), 1)
+    meta_total = safe_int(meta.get("total"), len(results))
+    current_page = safe_int(meta.get("page"), safe_int(first_payload.get("page"), 1))
+
+    # Si Brixhub ne donne pas meta.pages mais indique plus de résultats que per_page.
+    if meta_pages <= 1 and meta_total > len(results):
+        per_page = max(1, safe_int(meta.get("per_page"), safe_int(first_payload.get("per_page"), BRIXHUB_PER_PAGE)))
+        meta_pages = (meta_total + per_page - 1) // per_page
+
+    max_page = min(meta_pages, MAX_BRIXHUB_PAGES)
+
+    for page_number in range(current_page + 1, max_page + 1):
+        next_payload = prepare_paged_payload(payload, page=page_number)
+        next_result, next_status = call_brixhub(next_payload)
+        page_logs.append({
+            "payload": next_payload,
+            "status": next_status,
+            "cached": bool(next_result.get("cached")),
+        })
+
+        if not next_result.get("ok"):
+            last_error = next_result.get("error", "Erreur inconnue")
+            last_status = next_status
+            # 403 = plan sans pagination, 429 = rate limit : on garde page 1 et on stop proprement.
+            if next_status in [403, 429]:
+                break
+            break
+
+        next_api_result = next_result["data"]
+        next_results, _next_meta = safe_results(next_api_result)
+        if not next_results:
+            break
+
+        all_results.extend(next_results)
+
+    return all_results, page_logs, last_error, last_status
+
+
 def append_history(entry):
     history.append(entry)
     if len(history) > 100:
@@ -769,27 +862,31 @@ def append_history(entry):
 def search():
     data = normalize_search_data(request.json or {})
 
-    result, status = call_brixhub(data)
+    results, page_logs, last_error, last_status = fetch_brixhub_pages(data)
 
-    if not result.get("ok"):
-        return jsonify({"error": result.get("error", "Erreur inconnue")}), status
+    if not results and last_error:
+        return jsonify({"error": last_error}), last_status
 
-    api_result = result["data"]
-    results, meta = safe_results(api_result)
     exact_results = filter_exact_contact_results(results, data)
     sorted_results = sort_results(exact_results, data)
-
-    if isinstance(api_result.get("data"), dict):
-        api_result["data"]["results"] = sorted_results
 
     append_history({
         "type": "site",
         "query": data,
-        "total": meta.get("total", len(sorted_results)),
-        "cached": bool(result.get("cached")),
+        "payloads": page_logs,
+        "total": len(sorted_results),
     })
 
-    return jsonify(api_result)
+    return jsonify({
+        "status": 200,
+        "message": "ok",
+        "data": {"results": sorted_results},
+        "meta": {
+            "total": len(sorted_results),
+            "pages_fetched": len(page_logs),
+            "per_page": BRIXHUB_PER_PAGE,
+        },
+    })
 
 
 @app.route("/api/search")
@@ -810,21 +907,18 @@ def api_search():
     last_status = 502
 
     for payload in payloads:
-        result, status = call_brixhub(payload)
-        searched_payloads.append({"payload": payload, "status": status, "cached": bool(result.get("cached"))})
+        results, page_logs, error, status = fetch_brixhub_pages(payload)
+        searched_payloads.extend(page_logs)
 
-        if not result.get("ok"):
-            last_error = result.get("error", "Erreur inconnue")
+        if error and not results:
+            last_error = error
             last_status = status
-            if result.get("rate_limited"):
+            if status == 429:
                 break
             continue
 
-        api_result = result["data"]
-        results, _meta = safe_results(api_result)
-        result_groups.append(results)
-
         if results:
+            result_groups.append(results)
             break
 
     if not result_groups:
@@ -861,19 +955,18 @@ def api_multisearch():
     last_status = 502
 
     for payload in payloads:
-        result, status = call_brixhub(payload)
-        searched_payloads.append({"payload": payload, "status": status, "cached": bool(result.get("cached"))})
+        results, page_logs, error, status = fetch_brixhub_pages(payload)
+        searched_payloads.extend(page_logs)
 
-        if not result.get("ok"):
-            last_error = result.get("error", "Erreur inconnue")
+        if error and not results:
+            last_error = error
             last_status = status
-            if result.get("rate_limited"):
+            if status == 429:
                 break
             continue
 
-        api_result = result["data"]
-        results, _meta = safe_results(api_result)
-        result_groups.append(results)
+        if results:
+            result_groups.append(results)
 
         if should_stop_search(results, clean_data):
             break
