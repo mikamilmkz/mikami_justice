@@ -21,6 +21,7 @@ MIN_SECONDS_BETWEEN_BRIXHUB_CALLS = float(os.getenv("MIN_SECONDS_BETWEEN_BRIXHUB
 MAX_MULTISEARCH_CALLS = int(os.getenv("MAX_MULTISEARCH_CALLS", "3"))
 MAX_SIMPLE_SEARCH_CALLS = int(os.getenv("MAX_SIMPLE_SEARCH_CALLS", "2"))
 MAX_PHONE_SEARCH_CALLS = int(os.getenv("MAX_PHONE_SEARCH_CALLS", "5"))
+MAX_EMAIL_SEARCH_CALLS = int(os.getenv("MAX_EMAIL_SEARCH_CALLS", "2"))
 
 _brixhub_cache = {}
 _last_brixhub_call_at = 0.0
@@ -189,6 +190,47 @@ def phones_are_equivalent(query_value, item_value):
     return bool(query_variants & item_variants)
 
 
+def flatten_email_values(value):
+    if value in [None, "", "N/A"]:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        values = []
+        for entry in value:
+            values.extend(flatten_email_values(entry))
+        return values
+
+    text = str(value).strip().lower()
+    if not text:
+        return []
+
+    pieces = re.split(r"[,;/|\n\s]+", text)
+    return [piece.strip().lower() for piece in pieces if "@" in piece.strip()] or [text]
+
+
+def normalize_email_value(value):
+    emails = flatten_email_values(value)
+    if not emails:
+        return ""
+
+    # Un email est case-insensitive côté domaine, et dans notre usage on évite
+    # les espaces/majuscules pour ne pas envoyer un payload sale à Brixhub.
+    return emails[0].strip().lower()
+
+
+def emails_are_equivalent(query_value, item_value):
+    query_emails = {normalize_email_value(value) for value in flatten_email_values(query_value)}
+    item_emails = {normalize_email_value(value) for value in flatten_email_values(item_value)}
+
+    query_emails.discard("")
+    item_emails.discard("")
+
+    if not query_emails or not item_emails:
+        return False
+
+    return bool(query_emails & item_emails)
+
+
 def clean_payload(data):
     return {
         key: value.strip() if isinstance(value, str) else value
@@ -300,6 +342,14 @@ def phone_match_score(query_value, item_value):
     return 0
 
 
+def email_match_score(query_value, item_value):
+    # Email = précision stricte : exact uniquement, pas de flexible.
+    if emails_are_equivalent(query_value, item_value):
+        return 100
+
+    return 0
+
+
 def get_confidence(item):
     try:
         return int(item.get("_confidence") or 0)
@@ -362,6 +412,8 @@ def result_score(item, query_data):
 
         if field_name == "telephone":
             score += phone_match_score(query_value, item_value) * weight
+        elif field_name == "email":
+            score += email_match_score(query_value, item_value) * weight
         else:
             score += basic_match_score(query_value, item_value) * weight
 
@@ -385,17 +437,32 @@ def sort_results(results, query_data):
     )
 
 
-def filter_phone_exact_results(results, query_data):
+def filter_exact_contact_results(results, query_data):
     phone = (query_data or {}).get("telephone")
+    email = (query_data or {}).get("email")
 
-    if not phone:
-        return results
+    filtered = results
 
-    return [
-        item
-        for item in results
-        if phones_are_equivalent(phone, get_item_value(item, "telephone"))
-    ]
+    if phone:
+        filtered = [
+            item
+            for item in filtered
+            if phones_are_equivalent(phone, get_item_value(item, "telephone"))
+        ]
+
+    if email:
+        filtered = [
+            item
+            for item in filtered
+            if emails_are_equivalent(email, get_item_value(item, "email"))
+        ]
+
+    return filtered
+
+
+def filter_phone_exact_results(results, query_data):
+    # Alias conservé pour ne pas casser les appels existants.
+    return filter_exact_contact_results(results, query_data)
 
 
 def exact_identity_match(query_data, item):
@@ -424,8 +491,8 @@ def exact_identity_match(query_data, item):
         if any(value and value in full_variants for value in item_variants):
             return True
 
-    query_email = compact_text(query_data.get("email", ""))
-    if query_email and compact_text(get_item_value(item, "email")) == query_email:
+    query_email = query_data.get("email", "")
+    if query_email and emails_are_equivalent(query_email, get_item_value(item, "email")):
         return True
 
     query_phone = query_data.get("telephone", "")
@@ -526,6 +593,30 @@ def build_phone_payloads(base):
     return payloads[:MAX_PHONE_SEARCH_CALLS]
 
 
+def build_email_payloads(base):
+    """Email : exact uniquement, sans flexible, avec fallback en query exacte.
+
+    Certains appels Brixhub peuvent renvoyer 502 quand l'email est envoyé
+    dans un payload flexible. On évite donc totalement flexible=True avec email.
+    """
+    email = normalize_email_value(base.get("email"))
+    payloads = []
+
+    if not email:
+        return payloads
+
+    base_without_query = dict(base)
+    base_without_query.pop("query", None)
+    base_without_query["email"] = email
+    base_without_query["flexible"] = False
+    add_unique_payload(payloads, base_without_query)
+
+    # Fallback exact au cas où Brixhub n'aime pas le champ email structuré.
+    add_unique_payload(payloads, {"query": email, "flexible": False})
+
+    return payloads[:MAX_EMAIL_SEARCH_CALLS]
+
+
 def build_search_payloads(clean_data):
     """
     Mode normal anti-429 :
@@ -543,6 +634,10 @@ def build_search_payloads(clean_data):
     # Téléphone : jamais de flexible. On teste uniquement les formats exacts FR.
     if base.get("telephone"):
         return build_phone_payloads(base)
+
+    # Email : jamais de flexible. Exact uniquement + fallback query exacte.
+    if base.get("email"):
+        return build_email_payloads(base)
 
     payloads = []
 
@@ -642,6 +737,13 @@ def call_brixhub(payload, timeout=35):
                 "rate_limited": True,
             }, 429
 
+        if response.status_code in [500, 502, 503, 504]:
+            return {
+                "ok": False,
+                "error": "Brixhub répond temporairement mal à cette recherche. Une variante exacte est essayée automatiquement si disponible.",
+                "upstream_error": True,
+            }, response.status_code
+
         response.raise_for_status()
         result = response.json()
         save_cached_brixhub_response(payload, result)
@@ -674,7 +776,7 @@ def search():
 
     api_result = result["data"]
     results, meta = safe_results(api_result)
-    exact_results = filter_phone_exact_results(results, data)
+    exact_results = filter_exact_contact_results(results, data)
     sorted_results = sort_results(exact_results, data)
 
     if isinstance(api_result.get("data"), dict):
@@ -783,7 +885,7 @@ def api_multisearch():
         }), last_status
 
     merged_results = merge_results(result_groups)
-    exact_results = filter_phone_exact_results(merged_results, clean_data)
+    exact_results = filter_exact_contact_results(merged_results, clean_data)
     sorted_results = sort_results(exact_results, clean_data)
 
     append_history({
