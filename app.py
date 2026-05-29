@@ -12,21 +12,21 @@ from flask import Flask, jsonify, render_template, request
 app = Flask(__name__)
 
 API_KEY = os.getenv("API_KEY")
-BASE_URL = "https://brixhub.site/api/v1"
+BASE_URL = os.getenv("BRIXHUB_BASE_URL", "https://brixhub.net/api/v1").rstrip("/")
 history = []
 
 # Anti-429 : on limite les appels envoyés à Brixhub.
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))
-MIN_SECONDS_BETWEEN_BRIXHUB_CALLS = float(os.getenv("MIN_SECONDS_BETWEEN_BRIXHUB_CALLS", "0.9"))
+MIN_SECONDS_BETWEEN_BRIXHUB_CALLS = float(os.getenv("MIN_SECONDS_BETWEEN_BRIXHUB_CALLS", "2.0"))
 MAX_MULTISEARCH_CALLS = int(os.getenv("MAX_MULTISEARCH_CALLS", "3"))
 MAX_SIMPLE_SEARCH_CALLS = int(os.getenv("MAX_SIMPLE_SEARCH_CALLS", "2"))
-MAX_PHONE_SEARCH_CALLS = int(os.getenv("MAX_PHONE_SEARCH_CALLS", "5"))
-MAX_EMAIL_SEARCH_CALLS = int(os.getenv("MAX_EMAIL_SEARCH_CALLS", "2"))
+MAX_PHONE_SEARCH_CALLS = int(os.getenv("MAX_PHONE_SEARCH_CALLS", "1"))
+MAX_EMAIL_SEARCH_CALLS = int(os.getenv("MAX_EMAIL_SEARCH_CALLS", "1"))
 
 # Pagination Brixhub : l'API renvoie page 1 par défaut.
 # On récupère plusieurs pages, mais avec une limite pour éviter les 429.
 BRIXHUB_PER_PAGE = int(os.getenv("BRIXHUB_PER_PAGE", "10"))
-MAX_BRIXHUB_PAGES = int(os.getenv("MAX_BRIXHUB_PAGES", "10"))
+MAX_BRIXHUB_PAGES = int(os.getenv("MAX_BRIXHUB_PAGES", "3"))
 USER_AGENT = os.getenv("BRIXHUB_USER_AGENT", "MikamiBot/1.0")
 
 _brixhub_cache = {}
@@ -44,7 +44,7 @@ FIELD_ALIASES = {
 
 # Champs utilisés uniquement par notre bot/API.
 # Ils ne doivent jamais être envoyés à Brixhub.
-INTERNAL_PAYLOAD_KEYS = {"search_mode", "force_flexible", "mode"}
+INTERNAL_PAYLOAD_KEYS = {"search_mode", "force_flexible", "mode", "query"}
 
 
 @app.route("/")
@@ -580,6 +580,28 @@ def add_unique_payload(payloads, payload):
     payloads.append(cleaned)
 
 
+def preferred_french_phone_value(value):
+    """La doc Brixhub indique que telephone gère déjà les formats FR.
+    On envoie donc un seul numéro propre au lieu de spammer plusieurs variantes.
+    """
+    variants = french_phone_digit_variants(value)
+
+    # Priorité au format national français, puis international, puis saisie brute.
+    for candidate in variants:
+        if candidate.startswith("0") and len(candidate) == 10:
+            return candidate
+
+    for candidate in variants:
+        if candidate.startswith("33") and len(candidate) == 11:
+            return "+" + candidate
+
+    raw_values = flatten_phone_values(value)
+    if raw_values:
+        return raw_values[0].strip()
+
+    return str(value or "").strip()
+
+
 def build_phone_payloads(base):
     phone = base.get("telephone")
     payloads = []
@@ -587,24 +609,18 @@ def build_phone_payloads(base):
     if not phone:
         return payloads
 
-    base_without_phone = dict(base)
-    base_without_phone.pop("telephone", None)
-    base_without_phone.pop("query", None)
-
-    for variant in french_phone_search_variants(phone):
-        payload = dict(base_without_phone)
-        payload["telephone"] = variant
-        payload["flexible"] = False
-        add_unique_payload(payloads, payload)
+    # Téléphone = exact uniquement. Brixhub convertit lui-même 06 / +33 / 0033.
+    payload = {"telephone": preferred_french_phone_value(phone), "flexible": False}
+    add_unique_payload(payloads, payload)
 
     return payloads[:MAX_PHONE_SEARCH_CALLS]
 
 
 def build_email_payloads(base):
-    """Email : exact uniquement, sans flexible, avec fallback en query exacte.
+    """Email : exact uniquement, sans flexible.
 
-    Certains appels Brixhub peuvent renvoyer 502 quand l'email est envoyé
-    dans un payload flexible. On évite donc totalement flexible=True avec email.
+    La doc Brixhub indique que email est un champ exact et insensible à la casse.
+    On n'envoie pas de champ générique "query", car il n'est pas documenté.
     """
     email = normalize_email_value(base.get("email"))
     payloads = []
@@ -612,37 +628,49 @@ def build_email_payloads(base):
     if not email:
         return payloads
 
-    base_without_query = dict(base)
-    base_without_query.pop("query", None)
-    base_without_query["email"] = email
-    base_without_query["flexible"] = False
-    add_unique_payload(payloads, base_without_query)
-
-    # Fallback exact au cas où Brixhub n'aime pas le champ email structuré.
-    add_unique_payload(payloads, {"query": email, "flexible": False})
+    payload = {"email": email, "flexible": False}
+    add_unique_payload(payloads, payload)
 
     return payloads[:MAX_EMAIL_SEARCH_CALLS]
+
+
+def contains_exact_only_field(base):
+    """Champs qui, d'après la doc Brixhub, doivent rester exacts."""
+    exact_only_fields = {
+        "email",
+        "telephone",
+        "mobile",
+        "adresse_ip",
+        "nom_utilisateur",
+        "nir",
+        "iban",
+        "bic",
+        "siret",
+        "siren",
+        "vin_plaque",
+        "immatriculation",
+        "numero_serie",
+    }
+    return any(base.get(field) for field in exact_only_fields)
 
 
 def build_search_payloads(clean_data):
     """
     Mode normal anti-429 :
-    1) exact structuré
-    2) recherche texte exacte prénom + nom
-    3) flexible seulement en secours
+    1) payload exact documenté par Brixhub
+    2) flexible seulement en secours quand ça a du sens
 
-    Mode flexible_only :
-    - un seul appel Brixhub en flexible=True.
-    - utile pour le nouveau modal Flexible, sans multiplier les requêtes.
+    Important : on n'envoie plus de champ générique "query" à Brixhub,
+    car il n'existe pas dans la doc API. Ça évite des erreurs aléatoires.
     """
     base = clean_brixhub_payload(clean_data)
     base.pop("query", None)
 
-    # Téléphone : jamais de flexible. On teste uniquement les formats exacts FR.
+    # Téléphone : jamais de flexible. Brixhub gère déjà les formats FR.
     if base.get("telephone"):
         return build_phone_payloads(base)
 
-    # Email : jamais de flexible. Exact uniquement + fallback query exacte.
+    # Email : jamais de flexible. Exact uniquement.
     if base.get("email"):
         return build_email_payloads(base)
 
@@ -654,25 +682,22 @@ def build_search_payloads(clean_data):
         add_unique_payload(payloads, flexible_payload)
         return payloads[:1]
 
-    identity_fields = bool(base.get("prenom") or base.get("nom_famille"))
-    prenom = base.get("prenom", "")
-    nom_famille = base.get("nom_famille", "")
-
-    if identity_fields:
+    if base:
         exact_payload = dict(base)
         exact_payload["flexible"] = False
         add_unique_payload(payloads, exact_payload)
 
-    if prenom and nom_famille:
-        full_name = f"{prenom} {nom_famille}".strip()
-        add_unique_payload(payloads, {"query": full_name, "flexible": False})
+    # Si la recherche contient un identifiant exact (username, IP, etc.),
+    # on ne lance pas de flexible derrière : ça peut élargir inutilement.
+    if contains_exact_only_field(base):
+        return payloads[:MAX_MULTISEARCH_CALLS]
 
+    # Flexible seulement en secours pour les champs humains (nom, prénom, ville...).
     flexible_payload = dict(base)
     flexible_payload["flexible"] = True
     add_unique_payload(payloads, flexible_payload)
 
     return payloads[:MAX_MULTISEARCH_CALLS]
-
 
 def cache_key_for_payload(payload):
     cleaned = clean_payload(payload)
@@ -708,8 +733,54 @@ def save_cached_brixhub_response(payload, result):
             _brixhub_cache.pop(key, None)
 
 
+_rate_limited_until = 0.0
+
+
+def extract_brixhub_error(response):
+    """Transforme les erreurs Brixhub en messages clairs."""
+    error_type = ""
+    message = ""
+
+    try:
+        body = response.json()
+        raw_error = body.get("error")
+
+        if isinstance(raw_error, dict):
+            error_type = str(raw_error.get("type") or "").strip()
+            message = str(raw_error.get("message") or "").strip()
+        elif raw_error:
+            message = str(raw_error).strip()
+
+        message = message or str(body.get("message") or "").strip()
+    except Exception:
+        body_text = (response.text or "").strip()
+        if body_text:
+            message = body_text[:160]
+
+    if response.status_code == 400:
+        return "Paramètres refusés par Brixhub. La recherche a été nettoyée pour éviter les champs non supportés.", error_type
+
+    if response.status_code == 401:
+        return "Clé API Brixhub invalide, manquante ou expirée.", error_type
+
+    if response.status_code == 403:
+        if error_type == "plan_limited":
+            return "Pagination ou fonctionnalité non disponible avec le plan API actuel.", error_type
+        return message or "Accès refusé par Brixhub.", error_type
+
+    if response.status_code == 429:
+        if error_type == "quota_exceeded":
+            return "Quota journalier Brixhub dépassé. Il faut attendre la réinitialisation.", error_type
+        return "Trop de recherches envoyées à Brixhub. Le bot ralentit automatiquement.", error_type
+
+    if response.status_code in [500, 502, 503, 504]:
+        return "Brixhub répond temporairement mal. Réessaie dans quelques instants.", error_type
+
+    return message or f"Erreur Brixhub HTTP {response.status_code}.", error_type
+
+
 def call_brixhub(payload, timeout=35):
-    global _last_brixhub_call_at
+    global _last_brixhub_call_at, _rate_limited_until
 
     payload = clean_brixhub_payload(payload)
 
@@ -719,6 +790,15 @@ def call_brixhub(payload, timeout=35):
     cached = get_cached_brixhub_response(payload)
     if cached is not None:
         return {"ok": True, "data": cached, "cached": True}, 200
+
+    now = time.time()
+    if _rate_limited_until and now < _rate_limited_until:
+        wait_seconds = max(1, int(_rate_limited_until - now))
+        return {
+            "ok": False,
+            "error": f"Brixhub limite temporairement les recherches. Réessaie dans {wait_seconds}s.",
+            "rate_limited": True,
+        }, 429
 
     try:
         with _brixhub_lock:
@@ -735,36 +815,39 @@ def call_brixhub(payload, timeout=35):
             )
             _last_brixhub_call_at = time.time()
 
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After")
-            wait_message = f" Attends environ {retry_after} secondes." if retry_after else " Réessaie dans quelques instants."
-            return {
-                "ok": False,
-                "error": "Brixhub limite les requêtes pour le moment." + wait_message,
-                "rate_limited": True,
-            }, 429
+        if response.status_code >= 400:
+            error_message, error_type = extract_brixhub_error(response)
 
-        if response.status_code in [500, 502, 503, 504]:
+            if response.status_code == 429:
+                retry_after = safe_int(response.headers.get("Retry-After"), 60)
+                _rate_limited_until = time.time() + max(30, retry_after)
+
             return {
                 "ok": False,
-                "error": "Brixhub répond temporairement mal à cette recherche. Une variante exacte est essayée automatiquement si disponible.",
-                "upstream_error": True,
+                "error": error_message,
+                "error_type": error_type,
+                "http_status": response.status_code,
             }, response.status_code
 
-        response.raise_for_status()
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError:
+            return {
+                "ok": False,
+                "error": "Brixhub n'a pas renvoyé du JSON valide. Vérifie le User-Agent ou l'état Cloudflare.",
+            }, 502
+
         save_cached_brixhub_response(payload, result)
         return {"ok": True, "data": result}, 200
 
     except requests.exceptions.Timeout:
-        return {"ok": False, "error": "⏳ API Brixhub trop lente, réessaie dans quelques secondes."}, 504
+        return {"ok": False, "error": "API Brixhub trop lente, réessaie dans quelques secondes."}, 504
 
     except requests.exceptions.RequestException as e:
         return {"ok": False, "error": f"Erreur réseau API : {str(e)}"}, 502
 
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
-
 
 
 def safe_int(value, default=0):
@@ -813,6 +896,7 @@ def fetch_brixhub_pages(payload):
     api_result = first_result["data"]
     results, meta = safe_results(api_result)
     all_results.extend(results)
+    last_status = 200
 
     meta_pages = safe_int(meta.get("pages"), 1)
     meta_total = safe_int(meta.get("total"), len(results))
@@ -867,6 +951,21 @@ def search():
     if not results and last_error:
         return jsonify({"error": last_error}), last_status
 
+    # Aucun résultat n'est pas une erreur API.
+    if not results:
+        append_history({
+            "type": "site",
+            "query": data,
+            "payloads": page_logs,
+            "total": 0,
+        })
+        return jsonify({
+            "status": 200,
+            "message": "ok",
+            "data": {"results": []},
+            "meta": {"total": 0, "pages_fetched": len(page_logs), "per_page": BRIXHUB_PER_PAGE},
+        })
+
     exact_results = filter_exact_contact_results(results, data)
     sorted_results = sort_results(exact_results, data)
 
@@ -896,19 +995,38 @@ def api_search():
     if not query:
         return jsonify({"type": "raw", "results": [], "total": 0}), 400
 
-    payloads = [
-        {"query": query, "flexible": False},
-        {"query": query, "flexible": True},
-    ][:MAX_SIMPLE_SEARCH_CALLS]
+    payloads = []
+    guessed_prenom, guessed_nom = split_full_name(query)
+
+    if guessed_prenom and guessed_nom:
+        add_unique_payload(payloads, {
+            "prenom": guessed_prenom,
+            "nom_famille": guessed_nom,
+            "flexible": False,
+        })
+        add_unique_payload(payloads, {
+            "prenom": guessed_prenom,
+            "nom_famille": guessed_nom,
+            "flexible": True,
+        })
+    else:
+        add_unique_payload(payloads, {"nom_affichage": query, "flexible": False})
+        add_unique_payload(payloads, {"nom_affichage": query, "flexible": True})
+
+    payloads = payloads[:MAX_SIMPLE_SEARCH_CALLS]
 
     result_groups = []
     searched_payloads = []
     last_error = None
     last_status = 502
+    had_successful_call = False
 
     for payload in payloads:
         results, page_logs, error, status = fetch_brixhub_pages(payload)
         searched_payloads.extend(page_logs)
+
+        if status == 200 and not error:
+            had_successful_call = True
 
         if error and not results:
             last_error = error
@@ -922,7 +1040,15 @@ def api_search():
             break
 
     if not result_groups:
-        return jsonify({"type": "error", "message": last_error or "Erreur inconnue"}), last_status
+        append_history({
+            "type": "bot-simple",
+            "query": query,
+            "payloads": searched_payloads,
+            "total": 0,
+        })
+        if last_error and not had_successful_call:
+            return jsonify({"type": "error", "message": last_error}), last_status
+        return jsonify({"type": "raw", "results": [], "total": 0})
 
     merged_results = merge_results(result_groups)
     sorted_results = sort_results(merged_results, {"query": query})
@@ -953,10 +1079,14 @@ def api_multisearch():
     searched_payloads = []
     last_error = None
     last_status = 502
+    had_successful_call = False
 
     for payload in payloads:
         results, page_logs, error, status = fetch_brixhub_pages(payload)
         searched_payloads.extend(page_logs)
+
+        if status == 200 and not error:
+            had_successful_call = True
 
         if error and not results:
             last_error = error
@@ -972,10 +1102,18 @@ def api_multisearch():
             break
 
     if not result_groups:
-        return jsonify({
-            "type": "error",
-            "message": last_error or "Erreur inconnue",
-        }), last_status
+        append_history({
+            "type": "bot",
+            "query": clean_data,
+            "payloads": searched_payloads,
+            "total": 0,
+        })
+        if last_error and not had_successful_call:
+            return jsonify({
+                "type": "error",
+                "message": last_error,
+            }), last_status
+        return jsonify({"type": "raw", "results": [], "total": 0})
 
     merged_results = merge_results(result_groups)
     exact_results = filter_exact_contact_results(merged_results, clean_data)
