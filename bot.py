@@ -671,6 +671,37 @@ class PhoneModal(Modal, title="Recherche Téléphone"):
         )
 
 
+async def open_modal_safely(interaction: discord.Interaction, modal: Modal):
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_modal(modal)
+            return
+
+        await interaction.followup.send(
+            "⚠️ Interaction déjà traitée. Reclique sur le bouton.",
+            ephemeral=True,
+        )
+    except discord.NotFound:
+        # Discord renvoie souvent 10062 quand l'interaction a expiré
+        # ou si deux instances du bot essaient de répondre au même clic.
+        print("Interaction expirée ou déjà consommée avant l'ouverture du modal.")
+    except discord.HTTPException as e:
+        print(f"Erreur Discord pendant l'ouverture du modal : {e}")
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "⚠️ Impossible d’ouvrir le formulaire. Réessaie dans quelques secondes.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    "⚠️ Impossible d’ouvrir le formulaire. Réessaie dans quelques secondes.",
+                    ephemeral=True,
+                )
+        except Exception:
+            pass
+
+
 class Panel(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -681,7 +712,7 @@ class Panel(View):
         custom_id="btn_identity",
     )
     async def identity(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(NameModal())
+        await open_modal_safely(interaction, NameModal())
 
     @discord.ui.button(
         label="🧬 MultiSearch",
@@ -689,7 +720,7 @@ class Panel(View):
         custom_id="btn_multi",
     )
     async def multi(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(MultiModal())
+        await open_modal_safely(interaction, MultiModal())
 
     @discord.ui.button(
         label="🌫️ Flexible",
@@ -697,7 +728,7 @@ class Panel(View):
         custom_id="btn_multi_flexible",
     )
     async def multi_flexible(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(MultiFlexibleModal())
+        await open_modal_safely(interaction, MultiFlexibleModal())
 
     @discord.ui.button(
         label="📞 Téléphone",
@@ -705,7 +736,7 @@ class Panel(View):
         custom_id="btn_phone",
     )
     async def phone(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(PhoneModal())
+        await open_modal_safely(interaction, PhoneModal())
 
 
 async def setup_panel():
