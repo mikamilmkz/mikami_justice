@@ -27,8 +27,8 @@ ADMIN_LOG_CHANNEL_ID = 1509730558685483108
 BASE_URL = "https://mikami-justice.onrender.com"
 API_MULTI = f"{BASE_URL}/api/multisearch"
 LOGO_URL = f"{BASE_URL}/static/logo.png"
-BANNER_URL = f"{BASE_URL}/static/banner.png"
-BANNER_PATH = os.getenv("BANNER_PATH", "static/banner.png")
+BANNER_URL = f"{BASE_URL}/static/blackbox_banner.png"
+BANNER_PATH = os.getenv("BANNER_PATH", "static/blackbox_banner.png")
 BANNER_ATTACHMENT_NAME = "blackbox_banner.png"
 
 RESULTS_PER_PAGE = 2
