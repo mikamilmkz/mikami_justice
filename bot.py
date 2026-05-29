@@ -511,7 +511,7 @@ class MultiFlexibleModal(Modal, title="MultiSearch Flexible"):
 class PhoneModal(Modal, title="Recherche Téléphone"):
     telephone = TextInput(
         label="Téléphone",
-        placeholder="Ex: 0612345678",
+        placeholder="Ex: 0612345678 / +33612345678",
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -522,7 +522,8 @@ class PhoneModal(Modal, title="Recherche Téléphone"):
 
         payload = {
             "telephone": self.telephone.value.strip(),
-            "flexible": True,
+            "flexible": False,
+            "search_mode": "phone_exact",
         }
 
         try:
