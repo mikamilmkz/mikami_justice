@@ -29,7 +29,7 @@ API_MULTI = f"{BASE_URL}/api/multisearch"
 LOGO_URL = f"{BASE_URL}/static/logo.png"
 BANNER_URL = f"{BASE_URL}/static/banner.png"
 BANNER_PATH = os.getenv("BANNER_PATH", "static/banner.png")
-BANNER_ATTACHMENT_NAME = "mikami_banner.png"
+BANNER_ATTACHMENT_NAME = "blackbox_banner.png"
 
 RESULTS_PER_PAGE = 2
 
@@ -191,7 +191,7 @@ class ResultPages(View):
         description = safe_text(description, 3900)
 
         embed = discord.Embed(
-            title=f"⚖️ {self.title}",
+            title=f"⬛ {self.title}",
             description=f"```txt\n{description}\n```",
             color=color_from_confidence(best_confidence, self.default_color),
         )
@@ -211,7 +211,7 @@ class ResultPages(View):
         embed.set_thumbnail(url=LOGO_URL)
 
         embed.set_footer(
-            text="MIKAMI OSINT • Résultats privés",
+            text="BLACKBOX • Résultats privés",
             icon_url=LOGO_URL,
         )
 
@@ -383,7 +383,7 @@ async def log_admin_search(user, search_type, payload, total, elapsed_ms, data=N
         )
 
     embed.set_footer(
-        text="MIKAMI OSINT • Logs admin • Données sensibles masquées",
+        text="BLACKBOX • Logs admin • Données sensibles masquées",
         icon_url=LOGO_URL,
     )
 
@@ -424,7 +424,7 @@ async def log_public_search(user, search_type, total, data=None, error=None):
     )
 
     embed.set_footer(
-        text="MIKAMI OSINT • Logs publics",
+        text="BLACKBOX • Logs publics",
         icon_url=LOGO_URL,
     )
 
@@ -448,14 +448,14 @@ async def send_result(interaction, data, title, color):
 
         if not results:
             embed = discord.Embed(
-                title=f"⚖️ {title}",
+                title=f"⬛ {title}",
                 description="Aucun résultat trouvé",
                 color=color,
             )
 
             embed.set_thumbnail(url=LOGO_URL)
             embed.set_footer(
-                text="MIKAMI OSINT",
+                text="BLACKBOX",
                 icon_url=LOGO_URL,
             )
 
@@ -809,21 +809,20 @@ async def setup_panel():
         pass
 
     embed = discord.Embed(
-        title="⚖️ MIKAMI JUSTICE",
+        title="⬛ BLACKBOX",
         description=(
             "```ansi\n"
-            "MIKAMI OSINT • CONTROL PANEL\n"
+            "BLACKBOX // QUERY PANEL\n"
             "```\n"
-            "🪪 **Identité** — Nom + prénom uniquement\n"
-            "🧬 **MultiSearch** — Plusieurs infos à croiser\n"
-            "🌫️ **Flexible** — Infos approximatives ou orthographe incertaine\n"
-            "📞 **Téléphone** — Recherche par numéro\n\n"
-            "`API Online` • `Résultats privés`"
+            "**Interface privée de recherche et de recoupement.**\n\n"
+            "`IDENTITY`  Nom + prénom uniquement\n"
+            "`MULTI`     Plusieurs informations à croiser\n"
+            "`FLEX`      Données approximatives\n"
+            "`PHONE`     Recherche par numéro exact\n\n"
+            "`status: online` • `output: private`"
         ),
-        color=0x111318,
+        color=0x050505,
     )
-
-    embed.set_thumbnail(url=LOGO_URL)
 
     banner_file = None
     if os.path.exists(BANNER_PATH):
@@ -838,8 +837,7 @@ async def setup_panel():
     embed.timestamp = discord.utils.utcnow()
 
     embed.set_footer(
-        text="MIKAMI JUSTICE • Analyse. Comprends. Agis.",
-        icon_url=LOGO_URL,
+        text="BLACKBOX • private query interface",
     )
 
     if banner_file:
