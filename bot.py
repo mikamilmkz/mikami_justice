@@ -1,7 +1,9 @@
 import asyncio
+import json
 import os
 import threading
 import time
+from datetime import datetime, timezone
 
 import discord
 import requests
@@ -32,6 +34,28 @@ BANNER_PATH = os.getenv("BANNER_PATH", "static/blackbox_banner.png")
 BANNER_ATTACHMENT_NAME = "blackbox_banner.png"
 
 RESULTS_PER_PAGE = 2
+
+# Limites quotidiennes
+NORMAL_DAILY_SEARCH_LIMIT = 30
+QUOTA_FILE = os.getenv("QUOTA_FILE", "data/user_search_quota.json")
+
+# Donateurs illimités :
+# - soit via un rôle dont le nom est dans DONATOR_ROLE_NAMES
+# - soit en ajoutant directement l'ID du rôle dans DONATOR_ROLE_IDS
+DONATOR_ROLE_IDS = {
+    # 123456789012345678,
+}
+DONATOR_ROLE_NAMES = {
+    "soutien",
+    "donateur",
+    "donnateur",
+    "donator",
+    "supporter",
+    "premium",
+    "vip",
+}
+
+_quota_lock = threading.Lock()
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -139,6 +163,128 @@ def confidence_label(score):
         return " Faible confiance"
 
     return "⚫ Confiance inconnue"
+
+
+def today_utc_key():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def load_quota_state():
+    today = today_utc_key()
+
+    try:
+        with open(QUOTA_FILE, "r", encoding="utf-8") as file:
+            state = json.load(file)
+    except Exception:
+        state = {"date": today, "users": {}}
+
+    if not isinstance(state, dict):
+        state = {"date": today, "users": {}}
+
+    if state.get("date") != today:
+        state = {"date": today, "users": {}}
+
+    if not isinstance(state.get("users"), dict):
+        state["users"] = {}
+
+    return state
+
+
+def save_quota_state(state):
+    try:
+        os.makedirs(os.path.dirname(QUOTA_FILE) or ".", exist_ok=True)
+        with open(QUOTA_FILE, "w", encoding="utf-8") as file:
+            json.dump(state, file, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Impossible de sauvegarder le quota utilisateur : {e}")
+
+
+def user_has_unlimited_searches(user):
+    # Les administrateurs gardent un accès illimité.
+    permissions = getattr(user, "guild_permissions", None)
+    if permissions and getattr(permissions, "administrator", False):
+        return True
+
+    roles = getattr(user, "roles", []) or []
+
+    for role in roles:
+        if getattr(role, "id", None) in DONATOR_ROLE_IDS:
+            return True
+
+        role_name = str(getattr(role, "name", "")).strip().lower()
+        if role_name in DONATOR_ROLE_NAMES:
+            return True
+
+    return False
+
+
+def consume_daily_quota(user):
+    if user_has_unlimited_searches(user):
+        return True, None, NORMAL_DAILY_SEARCH_LIMIT
+
+    user_id = str(user.id)
+
+    with _quota_lock:
+        state = load_quota_state()
+        users = state["users"]
+        used = int(users.get(user_id, 0) or 0)
+
+        if used >= NORMAL_DAILY_SEARCH_LIMIT:
+            return False, used, NORMAL_DAILY_SEARCH_LIMIT
+
+        used += 1
+        users[user_id] = used
+        save_quota_state(state)
+
+    return True, used, NORMAL_DAILY_SEARCH_LIMIT
+
+
+async def log_quota_blocked(user, search_type, payload, used, limit):
+    channel = await get_admin_log_channel()
+
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="⛔ Recherche bloquée",
+        color=0xED4245,
+    )
+
+    embed.add_field(
+        name="Utilisateur",
+        value=f"{user.mention}\n`{user}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Mode",
+        value=f"**{search_type}**",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Limite",
+        value=f"`{used}/{limit}` recherches aujourd’hui",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Champs utilisés",
+        value=f"`{payload_fields(payload)}`",
+        inline=False,
+    )
+
+    embed.set_footer(
+        text="BLACKBOX • Limite quotidienne utilisateur",
+        icon_url=LOGO_URL,
+    )
+
+    embed.timestamp = discord.utils.utcnow()
+
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
 
 
 class ResultPages(View):
@@ -497,6 +643,27 @@ async def send_result(interaction, data, title, color):
 
 async def execute_search(interaction, payload, title, color, search_type):
     start_time = time.perf_counter()
+
+    allowed, used, limit = consume_daily_quota(interaction.user)
+
+    if not allowed:
+        await interaction.followup.send(
+            (
+                "⛔ Limite quotidienne atteinte.\n"
+                f"Tu as déjà utilisé **{used}/{limit}** recherches aujourd’hui.\n"
+                "Les donateurs ont un accès illimité."
+            ),
+            ephemeral=True,
+        )
+
+        await log_quota_blocked(
+            interaction.user,
+            search_type,
+            payload,
+            used,
+            limit,
+        )
+        return
 
     try:
         data = await call_api(payload)
