@@ -13,12 +13,16 @@ import {
   Boxes,
   CheckCircle2,
   CreditCard,
+  Crown,
+  ExternalLink,
   Home,
   LayoutDashboard,
   LifeBuoy,
   Lock,
+  Mail,
   Phone,
   Search,
+  Server,
   ShieldCheck,
   Sparkles,
   UserRound,
@@ -27,30 +31,37 @@ import {
 } from "lucide-react";
 import "./index.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "";
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? "http://localhost:3001" : "");
+
+const DISCORD_URL = "https://discord.gg/MVfsWDVe";
+const DISCORD_USERNAME = "@mullvad0817";
+const SUPPORT_EMAIL = "mikami41kl@outlook.fr";
+const HISTORY_KEY = "blackbox_search_history";
 
 const services = [
   {
     title: "Recherche privée",
-    desc: "Panel de recherche connecté à l’API Mikami.",
+    desc: "Panel de recherche connecté à l’API Mikami avec résultats propres.",
     tag: "Search",
     icon: Search,
   },
   {
     title: "Bot Discord",
-    desc: "Même logique que le bot Discord : panel, résultats privés et logs.",
+    desc: "Même logique que le site : panel, résultats privés, logs et pagination.",
     tag: "Discord",
     icon: Bot,
   },
   {
     title: "Dashboard",
-    desc: "Interface propre pour suivre les accès, services et statuts.",
+    desc: "Vue centrale pour suivre l’activité locale, les accès et les statuts.",
     tag: "Account",
     icon: LayoutDashboard,
   },
   {
     title: "Monitoring",
-    desc: "Suivi de disponibilité du site, du bot et de l’API.",
+    desc: "Suivi de disponibilité du site, du backend local et de l’API.",
     tag: "Status",
     icon: Activity,
   },
@@ -122,8 +133,14 @@ function Shell() {
           </div>
 
           <div className="topbar-actions">
-            <button className="ghost-btn">Rejoindre Discord</button>
-            <button className="primary-btn">Accéder</button>
+            <a
+              className="ghost-btn"
+              href={DISCORD_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Rejoindre Discord
+            </a>
           </div>
         </header>
 
@@ -173,16 +190,21 @@ function HomePage() {
             Ouvrir le search <ArrowRight size={18} />
           </NavLink>
 
-          <NavLink to="/services" className="secondary-link">
-            Voir les services
-          </NavLink>
+          <a
+            href={DISCORD_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="secondary-link"
+          >
+            Rejoindre Discord
+          </a>
         </div>
       </div>
 
       <div className="stats-grid">
         <Stat icon={Zap} label="API" value="Connected" />
         <Stat icon={Users} label="Interface" value="Private" />
-        <Stat icon={Activity} label="Disponibilité" value="Live" />
+        <Stat icon={Activity} label="Déploiement" value="Railway" />
       </div>
 
       <div className="section-head">
@@ -196,36 +218,80 @@ function HomePage() {
 }
 
 function Dashboard() {
+  const [history] = useState(() => loadSearchHistory());
+
   return (
     <section className="page-grid">
       <div className="dashboard-grid">
         <Stat icon={Search} label="Search" value="Online" />
         <Stat icon={Bot} label="Bot Discord" value="Online" />
-        <Stat icon={CreditCard} label="Soutien" value="1€+" />
+        <Stat icon={Crown} label="Premium" value="Discord" />
         <Stat icon={ShieldCheck} label="Sécurité" value="Active" />
       </div>
 
       <div className="card">
         <h2>Vue générale</h2>
         <p>
-          Le dashboard pourra afficher plus tard l’état du compte, les accès, les
-          limites, les avantages et l’historique utilisateur.
+          Le dashboard centralise l’état du projet, les accès disponibles, les
+          dernières recherches locales et les informations utiles pour les
+          membres.
         </p>
 
         <div className="timeline">
           <TimelineItem
-            title="Interface Black Box"
-            text="Nouvelle interface dark premium."
+            title="Site public"
+            text="Interface Black Box déployée et accessible en ligne."
           />
           <TimelineItem
-            title="Search connecté"
-            text="Le site utilise l’API Mikami existante."
+            title="API connectée"
+            text="Le site communique avec le backend Mikami existant."
           />
           <TimelineItem
-            title="Bot compatible"
-            text="Même logique que le panel Discord."
+            title="Accès premium"
+            text="Les accès soutien, premium et installation serveur se gèrent via Discord."
           />
         </div>
+      </div>
+
+      <div className="card">
+        <h2>Dernières recherches locales</h2>
+        <p>
+          Historique enregistré uniquement dans ton navigateur, pratique pour
+          retrouver rapidement les derniers modes utilisés.
+        </p>
+
+        {history.length === 0 ? (
+          <div className="backend-result-card">
+            <h3>Aucune recherche locale</h3>
+            <p>Les dernières recherches apparaîtront ici après utilisation.</p>
+          </div>
+        ) : (
+          <div className="status-list">
+            {history.map((item, index) => (
+              <div className="status-row" key={`${item.date}-${index}`}>
+                <span>
+                  {item.service} · {item.total} résultat(s)
+                </span>
+                <b>{item.date}</b>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="cards-3">
+        <Feature
+          title="Limites"
+          text="Les limites et accès étendus sont gérés côté Discord."
+        />
+        <Feature
+          title="Donateurs"
+          text="Les rôles soutien/premium peuvent donner des avantages supplémentaires."
+        />
+        <Feature
+          title="Accès bot/site"
+          text="Le site et le bot utilisent la même logique de recherche."
+        />
       </div>
     </section>
   );
@@ -236,11 +302,54 @@ function Services() {
     <section className="page-grid">
       <div className="section-head">
         <h2>Catalogue de services</h2>
-        <p>Services réellement utiles au projet Black Box.</p>
+        <p>Les services réellement utiles au projet Black Box.</p>
       </div>
 
-      <ServiceGrid />
+      <div className="service-grid">
+        <ServiceAction
+          icon={UserRound}
+          tag="Identity"
+          title="Recherche Identité"
+          text="Recherche ciblée par prénom et nom, avec ville optionnelle."
+        />
+        <ServiceAction
+          icon={Search}
+          tag="Multi"
+          title="MultiSearch"
+          text="Croisement de plusieurs informations : nom, prénom, ville, email ou username."
+        />
+        <ServiceAction
+          icon={Activity}
+          tag="Flex"
+          title="Recherche Flexible"
+          text="Mode approximatif quand les informations sont incomplètes ou incertaines."
+        />
+        <ServiceAction
+          icon={Phone}
+          tag="Phone"
+          title="Recherche Téléphone"
+          text="Recherche ciblée par numéro exact."
+        />
+      </div>
     </section>
+  );
+}
+
+function ServiceAction({ icon: Icon, tag, title, text }) {
+  return (
+    <div className="service-card">
+      <div className="service-icon">
+        <Icon size={22} />
+      </div>
+
+      <span>{tag}</span>
+      <h3>{title}</h3>
+      <p>{text}</p>
+
+      <NavLink to="/search" className="secondary-link">
+        Utiliser
+      </NavLink>
+    </div>
   );
 }
 
@@ -453,11 +562,19 @@ function SearchPage() {
         throw new Error(payload.message || "Erreur pendant la recherche.");
       }
 
-      setSearchResults(payload.results || []);
-      setSearchMeta({
+      const meta = {
         service: payload.service,
         searchedAt: payload.searchedAt,
         total: payload.total || 0,
+      };
+
+      setSearchResults(payload.results || []);
+      setSearchMeta(meta);
+
+      saveSearchHistory({
+        service: payload.service,
+        total: payload.total || 0,
+        date: new Date().toLocaleString("fr-FR"),
       });
 
       closeModal();
@@ -707,20 +824,35 @@ function BotPage() {
           Le bot Discord utilise la même API que ce site : panel privé, modals,
           pagination, logs et résultats éphémères.
         </p>
+
+        <div className="hero-actions">
+          <a
+            href={DISCORD_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="primary-link"
+          >
+            Rejoindre le serveur <ExternalLink size={18} />
+          </a>
+
+          <NavLink to="/pricing" className="secondary-link">
+            Voir les offres
+          </NavLink>
+        </div>
       </div>
 
       <div className="cards-3">
         <Feature
+          title="Installation serveur client"
+          text={`Le bot peut être installé sur un autre serveur. Contact : ${DISCORD_USERNAME}.`}
+        />
+        <Feature
           title="Résultats privés"
-          text="Les recherches restent visibles uniquement par l’utilisateur."
+          text="Chaque recherche reste visible uniquement par l’utilisateur."
         />
         <Feature
-          title="Panel premium"
-          text="Boutons, formulaires et pagination intégrés."
-        />
-        <Feature
-          title="Multi-clients"
-          text="Compatible avec plusieurs serveurs via variables Railway."
+          title="Accès premium"
+          text="Des options avancées peuvent être proposées selon l’offre choisie."
         />
       </div>
     </section>
@@ -733,24 +865,53 @@ function Pricing() {
       <PriceCard
         name="Gratuit"
         price="0€"
-        features={["Accès limité", "Dashboard", "Services publics"]}
+        features={[
+          "Accès au serveur Discord",
+          "Utilisation de base",
+          "Support communautaire",
+        ]}
+        action="Rejoindre Discord"
+        link={DISCORD_URL}
       />
 
       <PriceCard
         highlight
         name="Soutien"
         price="1€+"
-        features={["Rôle soutien", "Limites améliorées", "Priorité communautaire"]}
+        features={[
+          "Rôle soutien",
+          "Priorité communautaire",
+          "Avantages selon disponibilité",
+        ]}
+        action={`Contacter ${DISCORD_USERNAME}`}
+        link={DISCORD_URL}
       />
 
       <PriceCard
-        name="Premium"
-        price="Bientôt"
+        name="Installation bot serveur"
+        price="Sur demande"
         features={[
-          "Services avancés",
-          "Support prioritaire",
-          "Fonctions exclusives",
+          "Bot installé sur votre serveur",
+          "Panel dédié",
+          "Logs privés",
+          "Configuration salons",
         ]}
+        action={`Contacter ${DISCORD_USERNAME}`}
+        link={DISCORD_URL}
+      />
+
+      <PriceCard
+        highlight
+        name="Premium Gold"
+        price="Sur demande"
+        features={[
+          "La crème de la crème",
+          "Accès premium avancé",
+          "Priorité maximale",
+          "Options personnalisées",
+        ]}
+        action={`Contacter ${DISCORD_USERNAME}`}
+        link={DISCORD_URL}
       />
     </section>
   );
@@ -758,18 +919,21 @@ function Pricing() {
 
 function Status() {
   const [status, setStatus] = useState(null);
+  const [updatedAt, setUpdatedAt] = useState(null);
 
   const checkStatus = async () => {
     try {
       const response = await fetch(`${API_URL}/api/health`);
       const data = await response.json();
       setStatus(data);
+      setUpdatedAt(new Date().toLocaleString("fr-FR"));
     } catch {
       setStatus({
         ok: false,
         local: "offline",
         mikami: "unknown",
       });
+      setUpdatedAt(new Date().toLocaleString("fr-FR"));
     }
   };
 
@@ -778,7 +942,10 @@ function Status() {
       <div className="card xl">
         <h2>Statut des services</h2>
 
-        <p>Vérifie rapidement si le backend local et l’API Mikami répondent.</p>
+        <p>
+          Vérifie rapidement si le site, le backend local et l’API Mikami
+          répondent.
+        </p>
 
         <button className="primary-btn" onClick={checkStatus}>
           Vérifier le statut
@@ -786,10 +953,11 @@ function Status() {
       </div>
 
       <div className="status-list">
-        <StatusRow service="Frontend" status="Online" />
+        <StatusRow service="Site web" status="Online" />
         <StatusRow service="Backend local" status={status?.local || "À vérifier"} />
         <StatusRow service="API Mikami" status={status?.mikami || "À vérifier"} />
         <StatusRow service="Bot Discord" status="Online" />
+        <StatusRow service="Dernière vérification" status={updatedAt || "Jamais"} />
       </div>
     </section>
   );
@@ -800,16 +968,41 @@ function Support() {
     <section className="page-grid">
       <div className="card xl">
         <h2>Support</h2>
+
         <p>
-          Ajoute ici le lien Discord, les questions fréquentes, les règles
-          d’utilisation et le contact pour les demandes.
+          Pour une question, un problème ou une demande d’accès, utilise le salon
+          help du serveur Discord ou contacte l’email support.
         </p>
+
+        <div className="hero-actions">
+          <a
+            href={DISCORD_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="primary-link"
+          >
+            Aller sur le Discord <ExternalLink size={18} />
+          </a>
+
+          <a href={`mailto:${SUPPORT_EMAIL}`} className="secondary-link">
+            Envoyer un email
+          </a>
+        </div>
       </div>
 
       <div className="cards-3">
-        <Feature title="FAQ" text="Réponses rapides aux questions courantes." />
-        <Feature title="Tickets" text="Support via Discord ou formulaire." />
-        <Feature title="Signalement" text="Contact pour erreurs ou abus." />
+        <Feature
+          title="Salon help"
+          text="Le support principal passe par le salon help du serveur Discord."
+        />
+        <Feature
+          title="Email"
+          text={SUPPORT_EMAIL}
+        />
+        <Feature
+          title="Contact premium"
+          text={`Pour les offres payantes ou PayPal : contactez ${DISCORD_USERNAME} en MP Discord.`}
+        />
       </div>
     </section>
   );
@@ -819,10 +1012,10 @@ function Legal() {
   return (
     <section className="page-grid">
       <div className="card xl">
-        <h2>Règles et confidentialité</h2>
+        <h2>Légal</h2>
         <p>
-          Cette page doit expliquer les conditions d’utilisation, les usages
-          autorisés, les usages interdits et les règles de la plateforme.
+          Cette page sera complétée plus tard avec les règles d’utilisation, la
+          confidentialité et les conditions du service.
         </p>
       </div>
     </section>
@@ -886,7 +1079,7 @@ function Feature({ title, text }) {
   );
 }
 
-function PriceCard({ name, price, features, highlight }) {
+function PriceCard({ name, price, features, highlight, action, link }) {
   return (
     <div className={highlight ? "price-card highlight" : "price-card"}>
       <span>{name}</span>
@@ -901,7 +1094,13 @@ function PriceCard({ name, price, features, highlight }) {
         ))}
       </ul>
 
-      <button>{highlight ? "Devenir soutien" : "Voir"}</button>
+      {link ? (
+        <a href={link} target="_blank" rel="noreferrer">
+          <button>{action || "Voir"}</button>
+        </a>
+      ) : (
+        <button>{action || "Voir"}</button>
+      )}
     </div>
   );
 }
@@ -913,6 +1112,34 @@ function StatusRow({ service, status }) {
       <b>{status}</b>
     </div>
   );
+}
+
+function loadSearchHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const parsed = JSON.parse(raw || "[]");
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
+function saveSearchHistory(entry) {
+  try {
+    const current = loadSearchHistory();
+
+    const next = [
+      entry,
+      ...current,
+    ].slice(0, 8);
+
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage indisponible, aucun problème.
+  }
 }
 
 export default App;
